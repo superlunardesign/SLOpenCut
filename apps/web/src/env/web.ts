@@ -23,6 +23,8 @@ const webEnvSchema = z.object({
 	MARBLE_WORKSPACE_KEY: z.string().optional(),
 	FREESOUND_CLIENT_ID: z.string().optional(),
 	FREESOUND_API_KEY: z.string().optional(),
+	CLOUDFLARE_ACCOUNT_ID: z.string().optional(),
+	CLOUDFLARE_API_TOKEN: z.string().optional(),
 });
 
 export type WebEnv = z.infer<typeof webEnvSchema>;

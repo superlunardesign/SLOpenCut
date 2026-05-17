@@ -4,10 +4,13 @@ import { Redis } from "@upstash/redis";
 import { db } from "@/db";
 import { webEnv } from "@/env/web";
 
-const redis = new Redis({
-	url: webEnv.UPSTASH_REDIS_REST_URL,
-	token: webEnv.UPSTASH_REDIS_REST_TOKEN,
-});
+const redis =
+	webEnv.UPSTASH_REDIS_REST_URL && webEnv.UPSTASH_REDIS_REST_TOKEN
+		? new Redis({
+				url: webEnv.UPSTASH_REDIS_REST_URL,
+				token: webEnv.UPSTASH_REDIS_REST_TOKEN,
+			})
+		: null;
 
 export const auth = betterAuth({
 	database: drizzleAdapter(db, {
@@ -23,18 +26,22 @@ export const auth = betterAuth({
 	emailAndPassword: {
 		enabled: true,
 	},
-	rateLimit: {
-		storage: "secondary-storage",
-		customStorage: {
-			get: async (key) => {
-				const value = await redis.get(key);
-				return value as RateLimit | undefined;
-			},
-			set: async (key, value) => {
-				await redis.set(key, value);
-			},
-		},
-	},
+	...(redis
+		? {
+				rateLimit: {
+					storage: "secondary-storage",
+					customStorage: {
+						get: async (key) => {
+							const value = await redis.get(key);
+							return value as RateLimit | undefined;
+						},
+						set: async (key, value) => {
+							await redis.set(key, value);
+						},
+					},
+				},
+			}
+		: {}),
 	baseURL: webEnv.NEXT_PUBLIC_SITE_URL,
 	appName: "OpenCut",
 	trustedOrigins: [webEnv.NEXT_PUBLIC_SITE_URL],

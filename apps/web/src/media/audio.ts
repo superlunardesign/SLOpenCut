@@ -277,10 +277,26 @@ async function resolveAudioBufferForAsset({
 		const chunks: AudioBuffer[] = [];
 		let totalSamples = 0;
 
-		for await (const { buffer } of sink.buffers(0)) {
-			chunks.push(buffer);
-			totalSamples += buffer.length;
-		}
+		// mediabunny's async iterator can hang indefinitely for certain video
+		// codecs/containers — race it against a timeout so export doesn't stall
+		let decodeTimedOut = false;
+		let decodeTimeoutId: ReturnType<typeof setTimeout> | null = null;
+		await Promise.race([
+			(async () => {
+				for await (const { buffer } of sink.buffers(0)) {
+					if (decodeTimedOut) break;
+					chunks.push(buffer);
+					totalSamples += buffer.length;
+				}
+			})(),
+			new Promise<void>((_, reject) => {
+				decodeTimeoutId = setTimeout(() => {
+					decodeTimedOut = true;
+					reject(new Error("Audio decode timed out"));
+				}, 30_000);
+			}),
+		]);
+		if (decodeTimeoutId) clearTimeout(decodeTimeoutId);
 
 		if (chunks.length === 0) return null;
 

@@ -262,6 +262,20 @@ async function resolveAudioBufferForAsset({
 		}
 	}
 
+	// The browser's native decoder handles MP4/AAC, WebM/Opus, MOV/AAC
+	// reliably and terminates correctly — unlike mediabunny's streaming
+	// AudioBufferSink, which is designed for progressive playback and does
+	// not signal iterator completion when used for full-file bulk decoding.
+	try {
+		const arrayBuffer = await asset.file.arrayBuffer();
+		return await audioContext.decodeAudioData(arrayBuffer.slice(0));
+	} catch {
+		// Browser can't decode this container/codec — fall through to mediabunny
+	}
+
+	// Mediabunny fallback for formats the browser can't natively decode.
+	// The buffers() iterator is a streaming API: it does not signal done on
+	// its own, so we must break when we've consumed all frames via duration.
 	const input = new Input({
 		source: new BlobSource(asset.file),
 		formats: ALL_FORMATS,
@@ -271,32 +285,20 @@ async function resolveAudioBufferForAsset({
 		const audioTrack = await input.getPrimaryAudioTrack();
 		if (!audioTrack) return null;
 
+		const duration = await input.computeDuration();
 		const sink = new AudioBufferSink(audioTrack);
 		const targetSampleRate = audioContext.sampleRate;
 
 		const chunks: AudioBuffer[] = [];
 		let totalSamples = 0;
+		let decodedDuration = 0;
 
-		// mediabunny's async iterator can hang indefinitely for certain video
-		// codecs/containers — race it against a timeout so export doesn't stall
-		let decodeTimedOut = false;
-		let decodeTimeoutId: ReturnType<typeof setTimeout> | null = null;
-		await Promise.race([
-			(async () => {
-				for await (const { buffer } of sink.buffers(0)) {
-					if (decodeTimedOut) break;
-					chunks.push(buffer);
-					totalSamples += buffer.length;
-				}
-			})(),
-			new Promise<void>((_, reject) => {
-				decodeTimeoutId = setTimeout(() => {
-					decodeTimedOut = true;
-					reject(new Error("Audio decode timed out"));
-				}, 30_000);
-			}),
-		]);
-		if (decodeTimeoutId) clearTimeout(decodeTimeoutId);
+		for await (const { buffer, timestamp } of sink.buffers(0)) {
+			chunks.push(buffer);
+			totalSamples += buffer.length;
+			decodedDuration = timestamp + buffer.duration;
+			if (decodedDuration >= duration) break;
+		}
 
 		if (chunks.length === 0) return null;
 
@@ -321,7 +323,6 @@ async function resolveAudioBufferForAsset({
 			offset += chunk.length;
 		}
 
-		// use OfflineAudioContext for high-quality resampling to target rate
 		const outputSamples = Math.ceil(
 			totalSamples * (targetSampleRate / nativeSampleRate),
 		);

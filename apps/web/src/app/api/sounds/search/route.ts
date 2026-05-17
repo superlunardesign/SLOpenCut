@@ -185,6 +185,13 @@ export async function GET(request: NextRequest) {
 			commercial_only,
 		} = validationResult.data;
 
+		if (!webEnv.FREESOUND_API_KEY) {
+			return NextResponse.json(
+				{ error: "Sound search is not configured on this server" },
+				{ status: 501 },
+			);
+		}
+
 		if (type === "songs") {
 			return NextResponse.json(
 				{

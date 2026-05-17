@@ -152,6 +152,18 @@ export const ACTIONS = {
 
 export type TAction = keyof typeof ACTIONS;
 
+const ACTION_SET: ReadonlySet<string> = new Set(Object.keys(ACTIONS));
+
+// Actions whose args are non-optional and cannot be invoked without them
+const MANDATORY_ARGS_ACTION_SET: ReadonlySet<string> = new Set([
+	"remove-media-asset",
+	"remove-media-assets",
+]);
+
+export function isActionWithOptionalArgs(value: string): value is TActionWithOptionalArgs {
+	return ACTION_SET.has(value) && !MANDATORY_ARGS_ACTION_SET.has(value);
+}
+
 const ACTION_DEFAULT_SHORTCUTS = [
 	["toggle-play", ["space", "k"]],
 	["seek-forward", ["l"]],

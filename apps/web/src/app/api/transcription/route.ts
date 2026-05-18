@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
 		return NextResponse.json({ error: "Empty audio data" }, { status: 400 });
 	}
 
-	const cfUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/openai/whisper-large-v3-turbo`;
+	const cfUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/openai/whisper`;
 
 	// Cloudflare Workers AI accepts "binary" (raw audio file bytes)
 	const response = await fetch(cfUrl, {

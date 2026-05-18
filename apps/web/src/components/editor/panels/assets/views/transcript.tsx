@@ -96,12 +96,16 @@ export function TranscriptView() {
 				onProgress: () => {},
 			});
 
+			// Downsample to 16kHz mono — Whisper only needs this and it keeps
+			// the payload small enough for Cloudflare's REST API.
+			const transcriptionBlob = await downsampleToMonoWav(audioBlob, 16000);
+
 			dispatch({ type: "start_transcribe" });
 
 			const response = await fetch("/api/transcription", {
 				method: "POST",
-				body: audioBlob,
-				headers: { "Content-Type": audioBlob.type || "audio/wav" },
+				body: transcriptionBlob,
+				headers: { "Content-Type": "audio/wav" },
 			});
 
 			if (!response.ok) {
@@ -412,6 +416,48 @@ interface TranscriptTextProps {
 	selectedIndices: Set<number>;
 	activeWordIndex: number;
 	onWordClick: (index: number, shiftKey: boolean, ctrlKey: boolean) => void;
+}
+
+// ---- audio helpers ----
+
+async function downsampleToMonoWav(
+	audioBlob: Blob,
+	targetSampleRate: number,
+): Promise<Blob> {
+	const arrayBuffer = await audioBlob.arrayBuffer();
+	const tempCtx = new AudioContext();
+	const decoded = await tempCtx.decodeAudioData(arrayBuffer);
+	await tempCtx.close();
+
+	const frameCount = Math.ceil(decoded.duration * targetSampleRate);
+	const offlineCtx = new OfflineAudioContext(1, frameCount, targetSampleRate);
+	const source = offlineCtx.createBufferSource();
+	source.buffer = decoded;
+	source.connect(offlineCtx.destination);
+	source.start(0);
+	const resampled = await offlineCtx.startRendering();
+	const samples = resampled.getChannelData(0);
+
+	// Encode as 16-bit PCM WAV
+	const int16 = new Int16Array(samples.length);
+	for (let i = 0; i < samples.length; i++) {
+		int16[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767)));
+	}
+	const dataBytes = int16.byteLength;
+	const buf = new ArrayBuffer(44 + dataBytes);
+	const v = new DataView(buf);
+	const s = (o: number, t: string) => {
+		for (let i = 0; i < 4; i++) v.setUint8(o + i, t.charCodeAt(i));
+	};
+	s(0, "RIFF"); v.setUint32(4, 36 + dataBytes, true);
+	s(8, "WAVE"); s(12, "fmt ");
+	v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+	v.setUint16(22, 1, true); v.setUint32(24, targetSampleRate, true);
+	v.setUint32(28, targetSampleRate * 2, true); v.setUint16(32, 2, true);
+	v.setUint16(34, 16, true); s(36, "data");
+	v.setUint32(40, dataBytes, true);
+	new Int16Array(buf, 44).set(int16);
+	return new Blob([buf], { type: "audio/wav" });
 }
 
 function TranscriptText({

@@ -51,16 +51,14 @@ export async function POST(request: NextRequest) {
 
 	const cfUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/openai/whisper-large-v3-turbo`;
 
-	// Cloudflare Workers AI REST API expects {"audio": [uint8 integers]}
-	const audioBytes = Array.from(new Uint8Array(audioData));
-
+	// Cloudflare Workers AI accepts "binary" (raw audio file bytes)
 	const response = await fetch(cfUrl, {
 		method: "POST",
 		headers: {
 			Authorization: `Bearer ${apiToken}`,
-			"Content-Type": "application/json",
+			"Content-Type": "application/octet-stream",
 		},
-		body: JSON.stringify({ audio: audioBytes }),
+		body: audioData,
 	});
 
 	if (!response.ok) {
@@ -68,7 +66,7 @@ export async function POST(request: NextRequest) {
 		console.error(
 			`Cloudflare Whisper ${response.status}:`,
 			text.slice(0, 500),
-			`| audio bytes: ${audioBytes.length}`,
+			`| audio bytes: ${audioData.byteLength}`,
 		);
 		return NextResponse.json(
 			{ error: `Transcription failed: ${response.status} — ${text.slice(0, 200)}` },

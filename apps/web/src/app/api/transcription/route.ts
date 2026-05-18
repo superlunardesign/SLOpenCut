@@ -51,13 +51,18 @@ export async function POST(request: NextRequest) {
 
 	const cfUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/openai/whisper-large-v3-turbo`;
 
+	// Cloudflare Workers AI expects multipart/form-data with the file in "audio"
+	const formData = new FormData();
+	formData.append(
+		"audio",
+		new Blob([audioData], { type: "audio/wav" }),
+		"audio.wav",
+	);
+
 	const response = await fetch(cfUrl, {
 		method: "POST",
-		headers: {
-			Authorization: `Bearer ${apiToken}`,
-			"Content-Type": "application/octet-stream",
-		},
-		body: audioData,
+		headers: { Authorization: `Bearer ${apiToken}` },
+		body: formData,
 	});
 
 	if (!response.ok) {

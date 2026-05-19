@@ -22,12 +22,12 @@ interface WordWithTimeline extends TranscriptionWord {
 type TranscriptState =
 	| { status: "idle"; error: string | null }
 	| { status: "extracting" }
-	| { status: "transcribing" }
+	| { status: "transcribing"; label: string }
 	| { status: "done"; words: WordWithTimeline[] };
 
 type TranscriptAction =
 	| { type: "start_extract" }
-	| { type: "start_transcribe" }
+	| { type: "start_transcribe"; label?: string }
 	| { type: "done"; words: WordWithTimeline[] }
 	| { type: "fail"; error: string }
 	| { type: "reset" };
@@ -41,7 +41,7 @@ function transcriptReducer(
 		case "start_extract":
 			return { status: "extracting" };
 		case "start_transcribe":
-			return { status: "transcribing" };
+			return { status: "transcribing", label: action.label ?? "Transcribing…" };
 		case "done":
 			return { status: "done", words: action.words };
 		case "fail":
@@ -219,26 +219,54 @@ export function TranscriptView() {
 				onProgress: () => {},
 			});
 
-			const transcriptionBlob = await downsampleToMonoWav(audioBlob, 16000);
-			dispatch({ type: "start_transcribe" });
+			const samples = await downsampleToMono(audioBlob, 16000);
 
-			const response = await fetch("/api/transcription", {
-				method: "POST",
-				body: transcriptionBlob,
-				headers: { "Content-Type": "audio/wav" },
-			});
+			// Split into 25-second chunks — Cloudflare's REST API has a ~10MB
+			// body limit and 16kHz mono 16-bit PCM is ~800KB per 25s.
+			const CHUNK_SECS = 25;
+			const CHUNK_SAMPLES = CHUNK_SECS * 16000;
+			const totalChunks = Math.ceil(samples.length / CHUNK_SAMPLES);
+			const rawWords: TranscriptionWord[] = [];
 
-			if (!response.ok) {
-				const err = await response.json().catch(() => ({}));
-				throw new Error(
-					(err as { error?: string }).error ?? `HTTP ${response.status}`,
+			for (let c = 0; c < totalChunks; c++) {
+				dispatch({
+					type: "start_transcribe",
+					label:
+						totalChunks > 1
+							? `Transcribing chunk ${c + 1} of ${totalChunks}…`
+							: "Transcribing…",
+				});
+
+				const chunkSamples = samples.slice(
+					c * CHUNK_SAMPLES,
+					(c + 1) * CHUNK_SAMPLES,
 				);
+				const chunkBlob = encodeMonoWav(chunkSamples, 16000);
+				const offsetSecs = c * CHUNK_SECS;
+
+				const response = await fetch("/api/transcription", {
+					method: "POST",
+					body: chunkBlob,
+					headers: { "Content-Type": "audio/wav" },
+				});
+
+				if (!response.ok) {
+					const err = await response.json().catch(() => ({}));
+					throw new Error(
+						(err as { error?: string }).error ?? `HTTP ${response.status}`,
+					);
+				}
+
+				const data = (await response.json()) as { words?: TranscriptionWord[] };
+				for (const w of data.words ?? []) {
+					rawWords.push({
+						word: w.word,
+						start: w.start + offsetSecs,
+						end: w.end + offsetSecs,
+					});
+				}
 			}
 
-			const data = (await response.json()) as {
-				words?: TranscriptionWord[];
-			};
-			const rawWords = data.words ?? [];
 			if (rawWords.length === 0) {
 				throw new Error(
 					"No word-level timestamps returned — try a clip with clear speech.",
@@ -323,7 +351,7 @@ export function TranscriptView() {
 								{state.status === "extracting"
 									? "Extracting audio…"
 									: state.status === "transcribing"
-										? "Transcribing…"
+										? state.label
 										: "Transcribe Timeline"}
 							</Button>
 							{state.status === "idle" && state.error && (
@@ -500,10 +528,10 @@ function TranscriptText({
 
 // ---- audio helpers ----
 
-async function downsampleToMonoWav(
+async function downsampleToMono(
 	audioBlob: Blob,
 	targetSampleRate: number,
-): Promise<Blob> {
+): Promise<Float32Array> {
 	const arrayBuffer = await audioBlob.arrayBuffer();
 	const tempCtx = new AudioContext();
 	const decoded = await tempCtx.decodeAudioData(arrayBuffer);
@@ -516,8 +544,10 @@ async function downsampleToMonoWav(
 	source.connect(offlineCtx.destination);
 	source.start(0);
 	const resampled = await offlineCtx.startRendering();
-	const samples = resampled.getChannelData(0);
+	return resampled.getChannelData(0);
+}
 
+function encodeMonoWav(samples: Float32Array, sampleRate: number): Blob {
 	const int16 = new Int16Array(samples.length);
 	for (let i = 0; i < samples.length; i++) {
 		int16[i] = Math.max(
@@ -538,8 +568,8 @@ async function downsampleToMonoWav(
 	v.setUint32(16, 16, true);
 	v.setUint16(20, 1, true);
 	v.setUint16(22, 1, true);
-	v.setUint32(24, targetSampleRate, true);
-	v.setUint32(28, targetSampleRate * 2, true);
+	v.setUint32(24, sampleRate, true);
+	v.setUint32(28, sampleRate * 2, true);
 	v.setUint16(32, 2, true);
 	v.setUint16(34, 16, true);
 	s(36, "data");

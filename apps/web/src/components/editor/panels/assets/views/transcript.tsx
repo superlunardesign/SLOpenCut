@@ -192,7 +192,22 @@ export function TranscriptView() {
 	const tracks = useEditor((e) => e.scenes.getActiveScene().tracks);
 	const mediaAssets = useEditor((e) => e.media.getAssets());
 	const totalDuration = useEditor((e) => e.timeline.getTotalDuration());
-	const currentTime = useEditor((e) => e.playback.getCurrentTime());
+
+	// Poll playback position via RAF so word highlighting stays in sync
+	// frame-by-frame. useEditor only fires on state changes, not every frame.
+	const [currentTimeSecs, setCurrentTimeSecs] = useState(0);
+	const rafRef = useRef<number | null>(null);
+	useEffect(() => {
+		if (state.status !== "done") return;
+		const tick = () => {
+			setCurrentTimeSecs(editor.playback.getCurrentTime() / TICKS_PER_SECOND);
+			rafRef.current = requestAnimationFrame(tick);
+		};
+		rafRef.current = requestAnimationFrame(tick);
+		return () => {
+			if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+		};
+	}, [editor, state.status]);
 
 	const handleTranscribe = useCallback(async () => {
 		try {
@@ -240,13 +255,12 @@ export function TranscriptView() {
 		}
 	}, [tracks, mediaAssets, totalDuration]);
 
-	// Active word index driven by playhead position
 	const activeWordIndex =
 		state.status === "done"
 			? state.words.findIndex(
 					(w) =>
-						currentTime / TICKS_PER_SECOND >= w.timelineStart &&
-						currentTime / TICKS_PER_SECOND < w.timelineEnd,
+						currentTimeSecs >= w.timelineStart &&
+						currentTimeSecs < w.timelineEnd,
 				)
 			: -1;
 
@@ -323,19 +337,30 @@ export function TranscriptView() {
 							<div className="flex items-center justify-between">
 								<span className="text-muted-foreground text-xs">
 									{selectedIndices.size > 0
-										? `${selectedIndices.size} word${selectedIndices.size !== 1 ? "s" : ""} selected — press Delete to cut`
+										? `${selectedIndices.size} word${selectedIndices.size !== 1 ? "s" : ""} selected`
 										: `${state.words.length} words`}
 								</span>
-								<Button
-									size="sm"
-									variant="outline"
-									onClick={() => {
-										dispatch({ type: "reset" });
-										setSelectedIndices(new Set());
-									}}
-								>
-									Re-transcribe
-								</Button>
+								<div className="flex gap-2">
+									{selectedIndices.size > 0 && (
+										<Button
+											size="sm"
+											variant="destructive"
+											onClick={handleDeleteSelected}
+										>
+											Delete
+										</Button>
+									)}
+									<Button
+										size="sm"
+										variant="outline"
+										onClick={() => {
+											dispatch({ type: "reset" });
+											setSelectedIndices(new Set());
+										}}
+									>
+										Re-transcribe
+									</Button>
+								</div>
 							</div>
 
 							<TranscriptText

@@ -125,6 +125,13 @@ export const useAssetsPanelStore = create<AssetsPanelStore>()(
 				mediaSortBy: state.mediaSortBy,
 				mediaSortOrder: state.mediaSortOrder,
 			}),
+			// Always reset activeTab so stale values from older store versions
+			// (which persisted activeTab) don't survive a page reload.
+			merge: (persisted, current) => ({
+				...(current as AssetsPanelStore),
+				...(persisted as Partial<AssetsPanelStore>),
+				activeTab: "media" as Tab,
+			}),
 		},
 	),
 );

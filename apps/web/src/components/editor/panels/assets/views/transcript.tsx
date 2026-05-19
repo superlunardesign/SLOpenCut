@@ -7,10 +7,12 @@ import { Section, SectionContent } from "@/components/section";
 import { Spinner } from "@/components/ui/spinner";
 import { useEditor } from "@/editor/use-editor";
 import { extractTimelineAudio } from "@/media/mediabunny";
-import { TICKS_PER_SECOND, mediaTimeFromSeconds } from "@/wasm";
+import { TICKS_PER_SECOND, mediaTimeFromSeconds, type MediaTime } from "@/wasm";
 import { rippleShiftElements } from "@/ripple";
 import type { TranscriptionWord } from "@/transcription/types";
 import { EditorCore } from "@/core";
+import { Command, SplitElementsCommand, DeleteElementsCommand } from "@/commands";
+import type { SceneTracks } from "@/timeline";
 
 // ---- types ----
 
@@ -62,24 +64,48 @@ function buildTimelineWords(words: TranscriptionWord[]): WordWithTimeline[] {
 	}));
 }
 
-// Apply a single cut range to the timeline. Splits elements at cutStart and
-// cutEnd (keeping both sides each time), deletes the middle fragment, then
-// ripple-shifts everything after the cut left.
-function applyTimelineCut(
-	editor: EditorCore,
-	cutStart: ReturnType<typeof mediaTimeFromSeconds>,
-	cutEnd: ReturnType<typeof mediaTimeFromSeconds>,
+// Atomic undo command for a transcript cut. Stores before/after track
+// snapshots plus callbacks to restore the transcript word list.
+class TranscriptCutCommand extends Command {
+	constructor(
+		private readonly beforeTracks: SceneTracks,
+		private readonly afterTracks: SceneTracks,
+		private readonly onUndo: () => void,
+		private readonly onRedo: () => void,
+	) {
+		super();
+	}
+
+	execute(): undefined {
+		EditorCore.getInstance().timeline.updateTracks(this.afterTracks);
+		return undefined;
+	}
+
+	undo(): void {
+		EditorCore.getInstance().timeline.updateTracks(this.beforeTracks);
+		this.onUndo();
+	}
+
+	redo(): undefined {
+		EditorCore.getInstance().timeline.updateTracks(this.afterTracks);
+		this.onRedo();
+		return undefined;
+	}
+}
+
+// Apply a single cut range directly to the current timeline state WITHOUT
+// pushing individual commands to the editor history. The caller is
+// responsible for wrapping the full operation in a single history entry.
+function applyCutToStateDirectly(
+	cutStart: MediaTime,
+	cutEnd: MediaTime,
 ): void {
 	if (cutEnd <= cutStart) return;
 
-	const collectOverlapping = (
-		tracks: ReturnType<EditorCore["scenes"]["getActiveScene"]>["tracks"],
-	) => {
-		const allTracks = [
-			...tracks.overlay,
-			tracks.main,
-			...tracks.audio,
-		];
+	const getScene = () => EditorCore.getInstance().scenes.getActiveScene();
+
+	const collectOverlapping = (tracks: SceneTracks) => {
+		const allTracks = [...tracks.overlay, tracks.main, ...tracks.audio];
 		return allTracks.flatMap((track) =>
 			track.elements
 				.filter(
@@ -90,83 +116,76 @@ function applyTimelineCut(
 		);
 	};
 
-	// Step 1: split at cutEnd (both sides — preserve elements after the cut)
-	const overlapping = collectOverlapping(
-		editor.scenes.getActiveScene().tracks,
-	);
+	// Step 1: split at cutEnd — preserves elements after the cut
+	const overlapping = collectOverlapping(getScene().tracks);
 	if (overlapping.length === 0) return;
-
-	editor.timeline.splitElements({
+	new SplitElementsCommand({
 		elements: overlapping,
 		splitTime: cutEnd,
 		retainSide: "both",
-	});
+	}).execute();
 
-	// Step 2: split at cutStart on elements that now end at or before cutEnd
-	// (i.e. left-of-cutEnd portions that still span cutStart)
-	const afterCutEnd = collectOverlapping(
-		editor.scenes.getActiveScene().tracks,
-	).filter((ref) => {
-		const tracks = editor.scenes.getActiveScene().tracks;
-		const allTracks = [...tracks.overlay, tracks.main, ...tracks.audio];
+	// Step 2: split at cutStart on the left-side portions from step 1
+	const afterStep1 = getScene().tracks;
+	const toSplitAtCutStart = collectOverlapping(afterStep1).filter((ref) => {
+		const allTracks = [
+			...afterStep1.overlay,
+			afterStep1.main,
+			...afterStep1.audio,
+		];
 		const el = allTracks
 			.find((t) => t.id === ref.trackId)
 			?.elements.find((e) => e.id === ref.elementId);
-		if (!el) return false;
-		// Only elements whose end is at or before cutEnd (left portions from step 1)
-		return el.startTime + el.duration <= cutEnd;
+		return el ? el.startTime + el.duration <= cutEnd : false;
 	});
-
-	if (afterCutEnd.length > 0) {
-		editor.timeline.splitElements({
-			elements: afterCutEnd,
+	if (toSplitAtCutStart.length > 0) {
+		new SplitElementsCommand({
+			elements: toSplitAtCutStart,
 			splitTime: cutStart,
 			retainSide: "both",
-		});
+		}).execute();
 	}
 
-	// Step 3: delete middle fragments — elements entirely within [cutStart, cutEnd]
-	const tracksAfterSplits = editor.scenes.getActiveScene().tracks;
+	// Step 3: delete middle fragments (entirely within [cutStart, cutEnd])
+	const afterStep2 = getScene().tracks;
 	const allTracksAfterSplits = [
-		...tracksAfterSplits.overlay,
-		tracksAfterSplits.main,
-		...tracksAfterSplits.audio,
+		...afterStep2.overlay,
+		afterStep2.main,
+		...afterStep2.audio,
 	];
 	const toDelete = allTracksAfterSplits.flatMap((track) =>
 		track.elements
 			.filter(
 				(el) =>
-					el.startTime >= cutStart &&
-					el.startTime + el.duration <= cutEnd,
+					el.startTime >= cutStart && el.startTime + el.duration <= cutEnd,
 			)
 			.map((el) => ({ trackId: track.id, elementId: el.id })),
 	);
-
 	if (toDelete.length === 0) return;
-	editor.timeline.deleteElements({ elements: toDelete });
+	new DeleteElementsCommand({ elements: toDelete }).execute();
 
-	// Step 4: ripple — shift everything starting at or after cutEnd left by cut duration
+	// Step 4: ripple-shift everything after cutEnd left by the cut duration
 	const cutDuration = cutEnd - cutStart;
-	const afterDelete = editor.scenes.getActiveScene().tracks;
-	editor.timeline.updateTracks({
+	const afterStep3 = getScene().tracks;
+	EditorCore.getInstance().timeline.updateTracks({
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		overlay: afterDelete.overlay.map((track) => ({
+		overlay: afterStep3.overlay.map((track) => ({
 			...track,
 			elements: rippleShiftElements({
 				elements: track.elements as any[],
 				afterTime: cutEnd,
 				shiftAmount: cutDuration,
 			}),
-		})) as typeof afterDelete.overlay,
+		})) as typeof afterStep3.overlay,
 		main: {
-			...afterDelete.main,
+			...afterStep3.main,
 			elements: rippleShiftElements({
-				elements: afterDelete.main.elements,
+				elements: afterStep3.main.elements,
 				afterTime: cutEnd,
 				shiftAmount: cutDuration,
 			}),
 		},
-		audio: afterDelete.audio.map((track) => ({
+		audio: afterStep3.audio.map((track) => ({
 			...track,
 			elements: rippleShiftElements({
 				elements: track.elements,
@@ -295,22 +314,26 @@ export function TranscriptView() {
 	const handleDeleteSelected = useCallback(() => {
 		if (state.status !== "done" || selectedIndices.size === 0) return;
 
-		// Build list of cuts sorted right-to-left so earlier cuts aren't
-		// shifted by ripple from later ones.
+		// Snapshot before any changes so the undo command can restore both
+		// the timeline tracks and the transcript word list atomically.
+		const beforeWords = state.words;
+		const beforeTracks = editor.scenes.getActiveScene().tracks;
+
+		// Sort right-to-left so each ripple shift doesn't affect earlier cuts.
 		const cuts = [...selectedIndices]
 			.map((idx) => state.words[idx])
 			.filter((w): w is WordWithTimeline => w !== undefined)
 			.sort((a, b) => b.timelineStart - a.timelineStart);
 
-		let currentWords = [...state.words];
+		let currentWords = [...beforeWords];
 
 		for (const cut of cuts) {
 			const cutStart = mediaTimeFromSeconds({ seconds: cut.timelineStart });
 			const cutEnd = mediaTimeFromSeconds({ seconds: cut.timelineEnd });
 
-			applyTimelineCut(editor, cutStart, cutEnd);
+			// Apply directly to state (no individual history entries).
+			applyCutToStateDirectly(cutStart, cutEnd);
 
-			// Shift word timestamps: remove the cut word, shift later words left
 			const durationSecs = (cutEnd - cutStart) / TICKS_PER_SECOND;
 			currentWords = currentWords
 				.filter((w) => w !== cut)
@@ -325,7 +348,21 @@ export function TranscriptView() {
 				);
 		}
 
-		dispatch({ type: "done", words: currentWords });
+		const afterTracks = editor.scenes.getActiveScene().tracks;
+		const afterWords = currentWords;
+
+		// Register a single atomic history entry so Ctrl+Z restores both
+		// the timeline and the transcript words in one step.
+		editor.command.push({
+			command: new TranscriptCutCommand(
+				beforeTracks,
+				afterTracks,
+				() => dispatch({ type: "done", words: beforeWords }),
+				() => dispatch({ type: "done", words: afterWords }),
+			),
+		});
+
+		dispatch({ type: "done", words: afterWords });
 		setSelectedIndices(new Set());
 	}, [editor, state, selectedIndices]);
 

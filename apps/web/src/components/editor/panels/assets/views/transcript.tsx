@@ -10,7 +10,7 @@ import { extractTimelineAudio } from "@/media/mediabunny";
 import { TICKS_PER_SECOND, mediaTimeFromSeconds } from "@/wasm";
 import { rippleShiftElements } from "@/ripple";
 import type { TranscriptionWord } from "@/transcription/types";
-
+import { EditorCore } from "@/core";
 
 // ---- types ----
 
@@ -54,15 +54,127 @@ function transcriptReducer(
 
 // ---- helpers ----
 
-// Map word timestamps (relative to full mixed-audio export) to timeline time.
-// The mixed audio buffer starts at t=0 of the timeline, so words timestamps
-// are already timeline timestamps in seconds — no extra mapping needed.
 function buildTimelineWords(words: TranscriptionWord[]): WordWithTimeline[] {
 	return words.map((w) => ({
 		...w,
 		timelineStart: w.start,
 		timelineEnd: w.end,
 	}));
+}
+
+// Apply a single cut range to the timeline. Splits elements at cutStart and
+// cutEnd (keeping both sides each time), deletes the middle fragment, then
+// ripple-shifts everything after the cut left.
+function applyTimelineCut(
+	editor: EditorCore,
+	cutStart: ReturnType<typeof mediaTimeFromSeconds>,
+	cutEnd: ReturnType<typeof mediaTimeFromSeconds>,
+): void {
+	if (cutEnd <= cutStart) return;
+
+	const collectOverlapping = (
+		tracks: ReturnType<EditorCore["scenes"]["getActiveScene"]>["tracks"],
+	) => {
+		const allTracks = [
+			...tracks.overlay,
+			tracks.main,
+			...tracks.audio,
+		];
+		return allTracks.flatMap((track) =>
+			track.elements
+				.filter(
+					(el) =>
+						el.startTime < cutEnd && el.startTime + el.duration > cutStart,
+				)
+				.map((el) => ({ trackId: track.id, elementId: el.id })),
+		);
+	};
+
+	// Step 1: split at cutEnd (both sides — preserve elements after the cut)
+	const overlapping = collectOverlapping(
+		editor.scenes.getActiveScene().tracks,
+	);
+	if (overlapping.length === 0) return;
+
+	editor.timeline.splitElements({
+		elements: overlapping,
+		splitTime: cutEnd,
+		retainSide: "both",
+	});
+
+	// Step 2: split at cutStart on elements that now end at or before cutEnd
+	// (i.e. left-of-cutEnd portions that still span cutStart)
+	const afterCutEnd = collectOverlapping(
+		editor.scenes.getActiveScene().tracks,
+	).filter((ref) => {
+		const tracks = editor.scenes.getActiveScene().tracks;
+		const allTracks = [...tracks.overlay, tracks.main, ...tracks.audio];
+		const el = allTracks
+			.find((t) => t.id === ref.trackId)
+			?.elements.find((e) => e.id === ref.elementId);
+		if (!el) return false;
+		// Only elements whose end is at or before cutEnd (left portions from step 1)
+		return el.startTime + el.duration <= cutEnd;
+	});
+
+	if (afterCutEnd.length > 0) {
+		editor.timeline.splitElements({
+			elements: afterCutEnd,
+			splitTime: cutStart,
+			retainSide: "both",
+		});
+	}
+
+	// Step 3: delete middle fragments — elements entirely within [cutStart, cutEnd]
+	const tracksAfterSplits = editor.scenes.getActiveScene().tracks;
+	const allTracksAfterSplits = [
+		...tracksAfterSplits.overlay,
+		tracksAfterSplits.main,
+		...tracksAfterSplits.audio,
+	];
+	const toDelete = allTracksAfterSplits.flatMap((track) =>
+		track.elements
+			.filter(
+				(el) =>
+					el.startTime >= cutStart &&
+					el.startTime + el.duration <= cutEnd,
+			)
+			.map((el) => ({ trackId: track.id, elementId: el.id })),
+	);
+
+	if (toDelete.length === 0) return;
+	editor.timeline.deleteElements({ elements: toDelete });
+
+	// Step 4: ripple — shift everything starting at or after cutEnd left by cut duration
+	const cutDuration = cutEnd - cutStart;
+	const afterDelete = editor.scenes.getActiveScene().tracks;
+	editor.timeline.updateTracks({
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		overlay: afterDelete.overlay.map((track) => ({
+			...track,
+			elements: rippleShiftElements({
+				elements: track.elements as any[],
+				afterTime: cutEnd,
+				shiftAmount: cutDuration,
+			}),
+		})) as typeof afterDelete.overlay,
+		main: {
+			...afterDelete.main,
+			elements: rippleShiftElements({
+				elements: afterDelete.main.elements,
+				afterTime: cutEnd,
+				shiftAmount: cutDuration,
+			}),
+		},
+		audio: afterDelete.audio.map((track) => ({
+			...track,
+			elements: rippleShiftElements({
+				elements: track.elements,
+				afterTime: cutEnd,
+				shiftAmount: cutDuration,
+			}),
+		})),
+	});
 }
 
 // ---- component ----
@@ -73,13 +185,9 @@ export function TranscriptView() {
 		status: "idle",
 		error: null,
 	});
-
-	// word selection: set of word indices
 	const [selectedIndices, setSelectedIndices] = useState<Set<number>>(
 		new Set(),
 	);
-	// anchor index for shift-click range selection
-	const anchorRef = useRef<number | null>(null);
 
 	const tracks = useEditor((e) => e.scenes.getActiveScene().tracks);
 	const mediaAssets = useEditor((e) => e.media.getAssets());
@@ -96,10 +204,7 @@ export function TranscriptView() {
 				onProgress: () => {},
 			});
 
-			// Downsample to 16kHz mono — Whisper only needs this and it keeps
-			// the payload small enough for Cloudflare's REST API.
 			const transcriptionBlob = await downsampleToMonoWav(audioBlob, 16000);
-
 			dispatch({ type: "start_transcribe" });
 
 			const response = await fetch("/api/transcription", {
@@ -110,25 +215,22 @@ export function TranscriptView() {
 
 			if (!response.ok) {
 				const err = await response.json().catch(() => ({}));
-				throw new Error((err as { error?: string }).error ?? `HTTP ${response.status}`);
+				throw new Error(
+					(err as { error?: string }).error ?? `HTTP ${response.status}`,
+				);
 			}
 
 			const data = (await response.json()) as {
 				words?: TranscriptionWord[];
-				text?: string;
 			};
-
-			const rawWords: TranscriptionWord[] = data.words ?? [];
+			const rawWords = data.words ?? [];
 			if (rawWords.length === 0) {
 				throw new Error(
-					"No word-level timestamps returned. Check your Cloudflare Whisper model supports word timestamps.",
+					"No word-level timestamps returned — try a clip with clear speech.",
 				);
 			}
 
-			dispatch({
-				type: "done",
-				words: buildTimelineWords(rawWords),
-			});
+			dispatch({ type: "done", words: buildTimelineWords(rawWords) });
 			setSelectedIndices(new Set());
 		} catch (err) {
 			dispatch({
@@ -138,44 +240,7 @@ export function TranscriptView() {
 		}
 	}, [tracks, mediaAssets, totalDuration]);
 
-	const handleWordClick = useCallback(
-		(index: number, shiftKey: boolean, ctrlKey: boolean) => {
-			setSelectedIndices((prev) => {
-				if (shiftKey && anchorRef.current !== null) {
-					const lo = Math.min(anchorRef.current, index);
-					const hi = Math.max(anchorRef.current, index);
-					const next = new Set(prev);
-					for (let i = lo; i <= hi; i++) next.add(i);
-					return next;
-				}
-				if (ctrlKey || ctrlKey) {
-					const next = new Set(prev);
-					if (next.has(index)) {
-						next.delete(index);
-					} else {
-						next.add(index);
-					}
-					anchorRef.current = index;
-					return next;
-				}
-				anchorRef.current = index;
-				return new Set([index]);
-			});
-
-			// seek playhead to word start
-			if (state.status === "done") {
-				const word = state.words[index];
-				if (word) {
-					editor.playback.seek({
-						time: mediaTimeFromSeconds({ seconds: word.timelineStart }),
-					});
-				}
-			}
-		},
-		[editor, state],
-	);
-
-	// Highlight word at current playhead
+	// Active word index driven by playhead position
 	const activeWordIndex =
 		state.status === "done"
 			? state.words.findIndex(
@@ -188,150 +253,39 @@ export function TranscriptView() {
 	const handleDeleteSelected = useCallback(() => {
 		if (state.status !== "done" || selectedIndices.size === 0) return;
 
-		const words = state.words;
-		const indices = [...selectedIndices].sort((a, b) => b - a); // right-to-left
+		// Build list of cuts sorted right-to-left so earlier cuts aren't
+		// shifted by ripple from later ones.
+		const cuts = [...selectedIndices]
+			.map((idx) => state.words[idx])
+			.filter((w): w is WordWithTimeline => w !== undefined)
+			.sort((a, b) => b.timelineStart - a.timelineStart);
 
-		for (const idx of indices) {
-			const word = words[idx];
-			if (!word) continue;
+		let currentWords = [...state.words];
 
-			const cutStart = mediaTimeFromSeconds({ seconds: word.timelineStart });
-			const cutEnd = mediaTimeFromSeconds({ seconds: word.timelineEnd });
+		for (const cut of cuts) {
+			const cutStart = mediaTimeFromSeconds({ seconds: cut.timelineStart });
+			const cutEnd = mediaTimeFromSeconds({ seconds: cut.timelineEnd });
 
-			const sceneTracks = editor.scenes.getActiveScene().tracks;
-			const allTracks = [
-				...sceneTracks.overlay,
-				sceneTracks.main,
-				...sceneTracks.audio,
-			];
+			applyTimelineCut(editor, cutStart, cutEnd);
 
-			// Collect elements that overlap this cut range
-			const elementsInRange: { trackId: string; elementId: string }[] = [];
-			for (const track of allTracks) {
-				for (const el of track.elements) {
-					const elEnd = el.startTime + el.duration;
-					if (el.startTime < cutEnd && elEnd > cutStart) {
-						elementsInRange.push({ trackId: track.id, elementId: el.id });
-					}
-				}
-			}
-
-			if (elementsInRange.length === 0) continue;
-
-			// Split at cutEnd first (so element IDs stay stable for cutStart split)
-			editor.timeline.splitElements({
-				elements: elementsInRange,
-				splitTime: cutEnd,
-				retainSide: "left",
-			});
-
-			// Re-collect elements after split
-			const afterSplit = editor.scenes.getActiveScene().tracks;
-			const allTracksAfter = [
-				...afterSplit.overlay,
-				afterSplit.main,
-				...afterSplit.audio,
-			];
-			const elementsForCutStart: { trackId: string; elementId: string }[] = [];
-			for (const track of allTracksAfter) {
-				for (const el of track.elements) {
-					const elEnd = el.startTime + el.duration;
-					if (el.startTime < cutEnd && elEnd > cutStart) {
-						elementsForCutStart.push({
-							trackId: track.id,
-							elementId: el.id,
-						});
-					}
-				}
-			}
-
-			// Split at cutStart
-			editor.timeline.splitElements({
-				elements: elementsForCutStart,
-				splitTime: cutStart,
-				retainSide: "right",
-			});
-
-			// Collect the resulting middle fragments for deletion
-			const afterSecondSplit = editor.scenes.getActiveScene().tracks;
-			const allTracksAfter2 = [
-				...afterSecondSplit.overlay,
-				afterSecondSplit.main,
-				...afterSecondSplit.audio,
-			];
-			const toDelete: { trackId: string; elementId: string }[] = [];
-			for (const track of allTracksAfter2) {
-				for (const el of track.elements) {
-					const elEnd = el.startTime + el.duration;
-					// Middle fragment: entirely within [cutStart, cutEnd]
-					if (el.startTime >= cutStart && elEnd <= cutEnd) {
-						toDelete.push({ trackId: track.id, elementId: el.id });
-					}
-				}
-			}
-
-			if (toDelete.length > 0) {
-				editor.timeline.deleteElements({ elements: toDelete });
-
-				// Ripple: shift everything right of cutEnd left by cut duration
-				const cutDuration = cutEnd - cutStart;
-				const afterDelete = editor.scenes.getActiveScene().tracks;
-				const rippleTracks = {
-					overlay: afterDelete.overlay.map((track) => {
-						// eslint-disable-next-line @typescript-eslint/no-explicit-any
-						const shifted = rippleShiftElements({
-							elements: track.elements as any[],
-							afterTime: cutEnd,
-							shiftAmount: cutDuration,
-						});
-						return { ...track, elements: shifted } as typeof track;
-					}),
-					main: {
-						...afterDelete.main,
-						elements: rippleShiftElements({
-							elements: afterDelete.main.elements,
-							afterTime: cutEnd,
-							shiftAmount: cutDuration,
-						}),
-					},
-					audio: afterDelete.audio.map((track) => ({
-						...track,
-						elements: rippleShiftElements({
-							elements: track.elements,
-							afterTime: cutEnd,
-							shiftAmount: cutDuration,
-						}),
-					})),
-				};
-				editor.timeline.updateTracks(rippleTracks);
-
-				// Shift subsequent word timestamps too
-				const duration = (cutEnd - cutStart) / TICKS_PER_SECOND;
-				dispatch({
-					type: "done",
-					words: words
-						.filter((_, i) => !selectedIndices.has(i))
-						.map((w) => {
-							if (w.timelineStart >= word.timelineEnd) {
-								return {
-									...w,
-									timelineStart: w.timelineStart - duration,
-									timelineEnd: w.timelineEnd - duration,
-								};
+			// Shift word timestamps: remove the cut word, shift later words left
+			const durationSecs = (cutEnd - cutStart) / TICKS_PER_SECOND;
+			currentWords = currentWords
+				.filter((w) => w !== cut)
+				.map((w) =>
+					w.timelineStart >= cut.timelineEnd
+						? {
+								...w,
+								timelineStart: w.timelineStart - durationSecs,
+								timelineEnd: w.timelineEnd - durationSecs,
 							}
-							return w;
-						}),
-				});
-				setSelectedIndices(new Set());
-				return; // re-render with updated words; user can delete more selections
-			}
+						: w,
+				);
 		}
 
-		// If multiple selections, re-dispatch after loop (handled inside above)
+		dispatch({ type: "done", words: currentWords });
 		setSelectedIndices(new Set());
 	}, [editor, state, selectedIndices]);
-
-	// ---- render ----
 
 	const isLoading =
 		state.status === "extracting" || state.status === "transcribing";
@@ -343,8 +297,8 @@ export function TranscriptView() {
 					{state.status !== "done" && (
 						<div className="space-y-3">
 							<p className="text-muted-foreground text-sm">
-								Transcribe your timeline audio to edit by selecting and deleting
-								words — cuts are applied automatically.
+								Transcribe your timeline audio. Drag to select words, then press
+								Delete to cut them from the video.
 							</p>
 							<Button
 								className="w-full"
@@ -369,37 +323,32 @@ export function TranscriptView() {
 							<div className="flex items-center justify-between">
 								<span className="text-muted-foreground text-xs">
 									{selectedIndices.size > 0
-										? `${selectedIndices.size} word${selectedIndices.size !== 1 ? "s" : ""} selected`
+										? `${selectedIndices.size} word${selectedIndices.size !== 1 ? "s" : ""} selected — press Delete to cut`
 										: `${state.words.length} words`}
 								</span>
-								<div className="flex gap-2">
-									{selectedIndices.size > 0 && (
-										<Button
-											size="sm"
-											variant="destructive"
-											onClick={handleDeleteSelected}
-										>
-											Delete selection
-										</Button>
-									)}
-									<Button
-										size="sm"
-										variant="outline"
-										onClick={() => {
-											dispatch({ type: "reset" });
-											setSelectedIndices(new Set());
-										}}
-									>
-										Re-transcribe
-									</Button>
-								</div>
+								<Button
+									size="sm"
+									variant="outline"
+									onClick={() => {
+										dispatch({ type: "reset" });
+										setSelectedIndices(new Set());
+									}}
+								>
+									Re-transcribe
+								</Button>
 							</div>
 
 							<TranscriptText
 								words={state.words}
 								selectedIndices={selectedIndices}
 								activeWordIndex={activeWordIndex}
-								onWordClick={handleWordClick}
+								onSelectionChange={setSelectedIndices}
+								onSeek={(seconds) =>
+									editor.playback.seek({
+										time: mediaTimeFromSeconds({ seconds }),
+									})
+								}
+								onDeleteSelected={handleDeleteSelected}
 							/>
 						</div>
 					)}
@@ -409,13 +358,119 @@ export function TranscriptView() {
 	);
 }
 
-// ---- TranscriptText sub-component ----
+// ---- TranscriptText ----
 
 interface TranscriptTextProps {
 	words: WordWithTimeline[];
 	selectedIndices: Set<number>;
 	activeWordIndex: number;
-	onWordClick: (index: number, shiftKey: boolean, ctrlKey: boolean) => void;
+	onSelectionChange: (indices: Set<number>) => void;
+	onSeek: (seconds: number) => void;
+	onDeleteSelected: () => void;
+}
+
+function TranscriptText({
+	words,
+	selectedIndices,
+	activeWordIndex,
+	onSelectionChange,
+	onSeek,
+	onDeleteSelected,
+}: TranscriptTextProps) {
+	const containerRef = useRef<HTMLDivElement>(null);
+	const activeRef = useRef<HTMLSpanElement | null>(null);
+	const dragAnchorRef = useRef<number | null>(null);
+	const isDraggingRef = useRef(false);
+	const hasDraggedRef = useRef(false);
+
+	// Scroll active word into view during playback
+	useEffect(() => {
+		activeRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+	}, [activeWordIndex]);
+
+	// Cancel drag on global mouseup
+	useEffect(() => {
+		const onMouseUp = () => {
+			isDraggingRef.current = false;
+		};
+		window.addEventListener("mouseup", onMouseUp);
+		return () => window.removeEventListener("mouseup", onMouseUp);
+	}, []);
+
+	const handleWordMouseDown = (idx: number, e: React.MouseEvent) => {
+		e.preventDefault(); // prevent browser text selection
+		isDraggingRef.current = true;
+		hasDraggedRef.current = false;
+		dragAnchorRef.current = idx;
+		onSelectionChange(new Set([idx]));
+	};
+
+	const handleWordMouseEnter = (idx: number) => {
+		if (!isDraggingRef.current || dragAnchorRef.current === null) return;
+		hasDraggedRef.current = true;
+		const anchor = dragAnchorRef.current;
+		const lo = Math.min(anchor, idx);
+		const hi = Math.max(anchor, idx);
+		const next = new Set<number>();
+		for (let i = lo; i <= hi; i++) next.add(i);
+		onSelectionChange(next);
+	};
+
+	const handleWordMouseUp = (idx: number) => {
+		isDraggingRef.current = false;
+		// Single click (no drag): seek playhead to this word
+		if (!hasDraggedRef.current) {
+			const word = words[idx];
+			if (word) onSeek(word.timelineStart);
+		}
+	};
+
+	const handleKeyDown = (e: React.KeyboardEvent) => {
+		if (
+			(e.key === "Delete" || e.key === "Backspace") &&
+			selectedIndices.size > 0
+		) {
+			e.preventDefault();
+			onDeleteSelected();
+		}
+		if (e.key === "Escape") {
+			onSelectionChange(new Set());
+		}
+	};
+
+	return (
+		<div
+			ref={containerRef}
+			tabIndex={0}
+			onKeyDown={handleKeyDown}
+			className="outline-none text-sm leading-7 select-none max-h-[60vh] overflow-y-auto pr-1 focus:ring-1 focus:ring-ring rounded"
+			style={{ wordBreak: "break-word", cursor: "text" }}
+		>
+			{words.map((word, i) => {
+				const isSelected = selectedIndices.has(i);
+				const isActive = i === activeWordIndex;
+				return (
+					<span
+						key={`${i}-${word.word}`}
+						ref={isActive ? activeRef : undefined}
+						onMouseDown={(e) => handleWordMouseDown(i, e)}
+						onMouseEnter={() => handleWordMouseEnter(i)}
+						onMouseUp={() => handleWordMouseUp(i)}
+						className={[
+							"rounded px-0.5 transition-colors",
+							isSelected
+								? "bg-destructive/80 text-destructive-foreground"
+								: isActive
+									? "bg-primary/40 text-primary font-medium"
+									: "hover:bg-muted",
+						].join(" ")}
+					>
+						{word.word}
+					</span>
+				);
+			})}
+		</div>
+	);
 }
 
 // ---- audio helpers ----
@@ -438,10 +493,12 @@ async function downsampleToMonoWav(
 	const resampled = await offlineCtx.startRendering();
 	const samples = resampled.getChannelData(0);
 
-	// Encode as 16-bit PCM WAV
 	const int16 = new Int16Array(samples.length);
 	for (let i = 0; i < samples.length; i++) {
-		int16[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767)));
+		int16[i] = Math.max(
+			-32768,
+			Math.min(32767, Math.round(samples[i] * 32767)),
+		);
 	}
 	const dataBytes = int16.byteLength;
 	const buf = new ArrayBuffer(44 + dataBytes);
@@ -449,58 +506,19 @@ async function downsampleToMonoWav(
 	const s = (o: number, t: string) => {
 		for (let i = 0; i < 4; i++) v.setUint8(o + i, t.charCodeAt(i));
 	};
-	s(0, "RIFF"); v.setUint32(4, 36 + dataBytes, true);
-	s(8, "WAVE"); s(12, "fmt ");
-	v.setUint32(16, 16, true); v.setUint16(20, 1, true);
-	v.setUint16(22, 1, true); v.setUint32(24, targetSampleRate, true);
-	v.setUint32(28, targetSampleRate * 2, true); v.setUint16(32, 2, true);
-	v.setUint16(34, 16, true); s(36, "data");
+	s(0, "RIFF");
+	v.setUint32(4, 36 + dataBytes, true);
+	s(8, "WAVE");
+	s(12, "fmt ");
+	v.setUint32(16, 16, true);
+	v.setUint16(20, 1, true);
+	v.setUint16(22, 1, true);
+	v.setUint32(24, targetSampleRate, true);
+	v.setUint32(28, targetSampleRate * 2, true);
+	v.setUint16(32, 2, true);
+	v.setUint16(34, 16, true);
+	s(36, "data");
 	v.setUint32(40, dataBytes, true);
 	new Int16Array(buf, 44).set(int16);
 	return new Blob([buf], { type: "audio/wav" });
-}
-
-function TranscriptText({
-	words,
-	selectedIndices,
-	activeWordIndex,
-	onWordClick,
-}: TranscriptTextProps) {
-	const activeRef = useRef<HTMLSpanElement | null>(null);
-
-	// Scroll active word into view during playback
-	useEffect(() => {
-		if (activeRef.current) {
-			activeRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
-		}
-	}, [activeWordIndex]);
-
-	return (
-		<div
-			className="text-sm leading-7 select-none max-h-[60vh] overflow-y-auto pr-1"
-			style={{ wordBreak: "break-word" }}
-		>
-			{words.map((word, i) => {
-				const isSelected = selectedIndices.has(i);
-				const isActive = i === activeWordIndex;
-				return (
-					<span
-						key={`${i}-${word.word}`}
-						ref={isActive ? activeRef : undefined}
-						onClick={(e) => onWordClick(i, e.shiftKey, e.ctrlKey || e.metaKey)}
-						className={[
-							"cursor-pointer rounded px-0.5 transition-colors",
-							isSelected
-								? "bg-destructive/80 text-destructive-foreground"
-								: isActive
-									? "bg-primary/20 text-primary"
-									: "hover:bg-muted",
-						].join(" ")}
-					>
-						{word.word}
-					</span>
-				);
-			})}
-		</div>
-	);
 }

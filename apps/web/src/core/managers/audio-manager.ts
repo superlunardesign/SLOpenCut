@@ -674,7 +674,10 @@ export class AudioManager {
 	}: {
 		clip: AudioClipSource;
 	}): Promise<AudioBufferSink | null> {
-		const existingSink = this.sinks.get(clip.sourceKey);
+		// Key by clip.id, not sourceKey: split clips from the same file must each
+		// have their own sink so concurrent iterators don't corrupt each other's
+		// seek position.
+		const existingSink = this.sinks.get(clip.id);
 		if (existingSink) return existingSink;
 
 		try {
@@ -689,8 +692,8 @@ export class AudioManager {
 			}
 
 			const sink = new AudioBufferSink(audioTrack);
-			this.inputs.set(clip.sourceKey, input);
-			this.sinks.set(clip.sourceKey, sink);
+			this.inputs.set(clip.id, input);
+			this.sinks.set(clip.id, sink);
 			return sink;
 		} catch (error) {
 			console.warn("Failed to initialize audio sink:", error);

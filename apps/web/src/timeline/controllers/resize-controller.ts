@@ -8,6 +8,7 @@ import {
 	minMediaTime,
 	subMediaTime,
 	TICKS_PER_SECOND,
+	ZERO_MEDIA_TIME,
 } from "@/wasm";
 import {
 	computeGroupResize,
@@ -43,6 +44,7 @@ interface ResizeSession {
 	fps: FrameRate;
 	members: GroupResizeMember[];
 	result: GroupResizeResult | null;
+	pushUpdates: GroupResizeUpdate[];
 }
 
 type Session = { kind: "idle" } | ResizeSession;
@@ -237,6 +239,7 @@ export class ResizeController {
 			fps,
 			members,
 			result: null,
+			pushUpdates: [],
 		};
 		this.activate();
 		this.notify();
@@ -334,6 +337,8 @@ export class ResizeController {
 			),
 		});
 		const deltaTime = this.snappedDelta({ session, rawDeltaTime });
+
+		// Clamped resize — stops at neighbor boundary
 		const result = computeGroupResize({
 			members: session.members,
 			side: session.side,
@@ -341,8 +346,98 @@ export class ResizeController {
 			fps: session.fps,
 		});
 
-		session.result = result;
-		this.config.previewElements(result.updates);
+		// Unclamped resize — ignores neighbor bounds to measure overflow
+		const freeMembers = session.members.map((m) => ({
+			...m,
+			leftNeighborBound: null,
+			rightNeighborBound: null,
+		}));
+		const freeResult = computeGroupResize({
+			members: freeMembers,
+			side: session.side,
+			deltaTime,
+			fps: session.fps,
+		});
+
+		// Overflow = how far the drag extends past the neighbor boundary
+		const pushOverflow = subMediaTime({
+			a: freeResult.deltaTime,
+			b: result.deltaTime,
+		});
+
+		const pushUpdates =
+			pushOverflow !== ZERO_MEDIA_TIME
+				? this.buildPushUpdates({ session, pushOverflow })
+				: [];
+
+		// When pushing, apply the unclamped result to the resized clip so it
+		// extends fully, and shift the displaced neighbors.
+		session.result = pushUpdates.length > 0 ? freeResult : result;
+		session.pushUpdates = pushUpdates;
+
+		const memberUpdates =
+			pushUpdates.length > 0 ? freeResult.updates : result.updates;
+		this.config.previewElements([...memberUpdates, ...pushUpdates]);
+	}
+
+	private buildPushUpdates({
+		session,
+		pushOverflow,
+	}: {
+		session: ResizeSession;
+		pushOverflow: MediaTime;
+	}): GroupResizeUpdate[] {
+		const tracks = this.config.getSceneTracks();
+		const allTracks = [...tracks.overlay, tracks.main, ...tracks.audio];
+		const trackMap = new Map(allTracks.map((t) => [t.id, t]));
+		const memberElementIds = new Set(session.members.map((m) => m.elementId));
+		const updates: GroupResizeUpdate[] = [];
+
+		for (const member of session.members) {
+			const track = trackMap.get(member.trackId);
+			if (!track) continue;
+
+			if (session.side === "right" && member.rightNeighborBound !== null) {
+				// Shift all elements on this track that start at or after the
+				// right neighbor boundary rightward by the overflow amount.
+				for (const el of track.elements) {
+					if (memberElementIds.has(el.id)) continue;
+					if (el.startTime >= member.rightNeighborBound) {
+						updates.push({
+							trackId: member.trackId,
+							elementId: el.id,
+							patch: {
+								trimStart: el.trimStart,
+								trimEnd: el.trimEnd,
+								startTime: addMediaTime({ a: el.startTime, b: pushOverflow }),
+								duration: el.duration,
+							},
+						});
+					}
+				}
+			} else if (session.side === "left" && member.leftNeighborBound !== null) {
+				// Shift all elements on this track that end at or before the
+				// left neighbor boundary leftward by the overflow amount (negative).
+				for (const el of track.elements) {
+					if (memberElementIds.has(el.id)) continue;
+					const elEnd = addMediaTime({ a: el.startTime, b: el.duration });
+					if (elEnd <= member.leftNeighborBound) {
+						updates.push({
+							trackId: member.trackId,
+							elementId: el.id,
+							patch: {
+								trimStart: el.trimStart,
+								trimEnd: el.trimEnd,
+								startTime: addMediaTime({ a: el.startTime, b: pushOverflow }),
+								duration: el.duration,
+							},
+						});
+					}
+				}
+			}
+		}
+
+		return updates;
 	}
 
 	private handleMouseUp(): void {
@@ -351,11 +446,16 @@ export class ResizeController {
 
 		this.config.discardPreview();
 
-		if (
+		const hasChanges =
 			session.result &&
-			hasResizeChanges({ members: session.members, result: session.result })
-		) {
-			this.config.commitElements(session.result.updates);
+			hasResizeChanges({ members: session.members, result: session.result });
+		const hasPushChanges = session.pushUpdates.length > 0;
+
+		if ((hasChanges || hasPushChanges) && session.result) {
+			this.config.commitElements([
+				...session.result.updates,
+				...session.pushUpdates,
+			]);
 		}
 
 		this.finishSession();

@@ -12,6 +12,7 @@ import {
 	Settings01Icon,
 	SlidersHorizontalIcon,
 	ColorsIcon,
+	FileEditIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 
@@ -23,6 +24,7 @@ export const TAB_KEYS = [
 	"effects",
 	"transitions",
 	"captions",
+	"transcript",
 	"adjustment",
 	"settings",
 ] as const;
@@ -63,6 +65,10 @@ export const tabs = {
 	captions: {
 		icon: createHugeiconsIcon({ icon: ClosedCaptionIcon }),
 		label: "Captions",
+	},
+	transcript: {
+		icon: createHugeiconsIcon({ icon: FileEditIcon }),
+		label: "Transcript",
 	},
 	adjustment: {
 		icon: createHugeiconsIcon({ icon: SlidersHorizontalIcon }),
@@ -118,6 +124,13 @@ export const useAssetsPanelStore = create<AssetsPanelStore>()(
 				mediaViewMode: state.mediaViewMode,
 				mediaSortBy: state.mediaSortBy,
 				mediaSortOrder: state.mediaSortOrder,
+			}),
+			// Always reset activeTab so stale values from older store versions
+			// (which persisted activeTab) don't survive a page reload.
+			merge: (persisted, current) => ({
+				...(current as AssetsPanelStore),
+				...(persisted as Partial<AssetsPanelStore>),
+				activeTab: "media" as Tab,
 			}),
 		},
 	),

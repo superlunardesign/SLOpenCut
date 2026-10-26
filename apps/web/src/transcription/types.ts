@@ -2,16 +2,24 @@ import type { LanguageCode } from "./languages";
 
 export type TranscriptionLanguage = LanguageCode | "auto";
 
+export interface TranscriptionWord {
+	word: string;
+	start: number;
+	end: number;
+}
+
 export interface TranscriptionSegment {
 	text: string;
 	start: number;
 	end: number;
+	words?: TranscriptionWord[];
 }
 
 export interface TranscriptionResult {
 	text: string;
 	segments: TranscriptionSegment[];
 	language: string;
+	words?: TranscriptionWord[];
 }
 
 export type TranscriptionStatus =

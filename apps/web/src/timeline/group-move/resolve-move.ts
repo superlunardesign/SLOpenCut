@@ -107,7 +107,22 @@ function resolveExistingTrackMove({
 	}));
 
 	if (!canApplyMovesToExistingTracks({ tracks, moves })) {
-		return null;
+		// Try push-insert: shift right-side stationary clips to make room.
+		const movingElementIds = new Set(
+			group.members.map((member) => member.elementId),
+		);
+		const pushMoves = computePushMoves({ primaryMoves: moves, movingElementIds, tracks });
+		if (!pushMoves || pushMoves.length === 0) return null;
+		const allMoves = [...moves, ...pushMoves];
+		if (!canApplyMovesToExistingTracks({ tracks, moves: allMoves })) return null;
+		return {
+			moves: allMoves,
+			createTracks: [],
+			targetSelection: moves.map(({ elementId, targetTrackId }) => ({
+				trackId: targetTrackId,
+				elementId,
+			})),
+		};
 	}
 
 	return {
@@ -407,6 +422,112 @@ function clampAnchorStartTime({
 	}
 
 	return clampedAnchorStartTime;
+}
+
+// When a clip is dragged into a position that would overlap right-side
+// stationary clips, compute how far each of those clips needs to shift right
+// so the dragged clip can slot in without overlap.
+//
+// Returns null if the push is impossible (e.g. a stationary clip blocks on
+// the LEFT of the insertion point — we never push leftward).
+// Returns an empty array if no push is needed (no overlap detected).
+function computePushMoves({
+	primaryMoves,
+	movingElementIds,
+	tracks,
+}: {
+	primaryMoves: PlannedElementMove[];
+	movingElementIds: Set<string>;
+	tracks: SceneTracks;
+}): PlannedElementMove[] | null {
+	const allTracks = getDisplayTracks({ tracks });
+	const sourceElements = new Map(
+		allTracks.flatMap((track) =>
+			track.elements.map((el) => [el.id, el] as const),
+		),
+	);
+
+	// Collect the maximum push needed per element (keyed by elementId) in case
+	// multiple primary moves on the same track require different push amounts.
+	const pushByElementId = new Map<
+		string,
+		{ trackId: string; pushAmount: MediaTime }
+	>();
+
+	const movesByTargetTrackId = new Map<string, PlannedElementMove[]>();
+	for (const move of primaryMoves) {
+		const existing = movesByTargetTrackId.get(move.targetTrackId) ?? [];
+		existing.push(move);
+		movesByTargetTrackId.set(move.targetTrackId, existing);
+	}
+
+	for (const [targetTrackId, targetMoves] of movesByTargetTrackId) {
+		const targetPlacement = getTrackPlacementById({ tracks, trackId: targetTrackId });
+		if (!targetPlacement) return null;
+
+		const targetTrack = allTracks[targetPlacement.displayIndex];
+		if (!targetTrack) return null;
+
+		const stationaryElements = targetTrack.elements.filter(
+			(el) => !movingElementIds.has(el.id),
+		);
+
+		for (const move of targetMoves) {
+			const sourceEl = sourceElements.get(move.elementId);
+			if (!sourceEl) return null;
+
+			const movedEnd = addMediaTime({ a: move.newStartTime, b: sourceEl.duration });
+
+			// Find stationary elements that overlap with the moved clip's new span.
+			const overlapping = stationaryElements.filter((el) => {
+				const elEnd = addMediaTime({ a: el.startTime, b: el.duration });
+				return el.startTime < movedEnd && elEnd > move.newStartTime;
+			});
+
+			if (overlapping.length === 0) continue;
+
+			// If any overlap starts BEFORE the insertion point we would need to
+			// push leftward — not supported. Abort push for this drop target.
+			if (overlapping.some((el) => el.startTime < move.newStartTime)) return null;
+
+			// First blocker = the earliest right-side element that overlaps.
+			const firstBlocker = overlapping.reduce((min, el) =>
+				el.startTime < min.startTime ? el : min,
+			);
+			const pushAmount = subMediaTime({
+				a: movedEnd,
+				b: firstBlocker.startTime,
+			});
+			if (pushAmount <= ZERO_MEDIA_TIME) continue;
+
+			// Shift every stationary element starting at or after the first
+			// blocker rightward by the same push amount so relative spacing
+			// is preserved (ripple-style).
+			for (const el of stationaryElements) {
+				if (el.startTime >= firstBlocker.startTime) {
+					const existing = pushByElementId.get(el.id);
+					if (!existing || pushAmount > existing.pushAmount) {
+						pushByElementId.set(el.id, { trackId: targetTrackId, pushAmount });
+					}
+				}
+			}
+		}
+	}
+
+	if (pushByElementId.size === 0) return [];
+
+	const result: PlannedElementMove[] = [];
+	for (const [elementId, { trackId, pushAmount }] of pushByElementId) {
+		const el = sourceElements.get(elementId);
+		if (!el) return null;
+		result.push({
+			sourceTrackId: trackId,
+			targetTrackId: trackId,
+			elementId,
+			newStartTime: addMediaTime({ a: el.startTime, b: pushAmount }),
+		});
+	}
+	return result;
 }
 
 function canApplyMovesToExistingTracks({

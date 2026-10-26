@@ -47,9 +47,9 @@ export function TextEditOverlay({
 		if (!div) return;
 		const text = div.innerText;
 		editor.timeline.previewElements({
-			updates: [{ trackId, elementId, updates: { params: { content: text } } }],
+			updates: [{ trackId, elementId, updates: { params: { ...element.params, content: text } } }],
 		});
-	}, [editor.timeline, trackId, elementId]);
+	}, [editor.timeline, trackId, elementId, element.params]);
 
 	const handleKeyDown = useCallback(
 		({ event }: { event: React.KeyboardEvent }) => {

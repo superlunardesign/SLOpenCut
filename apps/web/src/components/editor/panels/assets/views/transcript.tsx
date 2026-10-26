@@ -319,26 +319,49 @@ export function TranscriptView() {
 		const beforeWords = state.words;
 		const beforeTracks = editor.scenes.getActiveScene().tracks;
 
-		// Sort right-to-left so each ripple shift doesn't affect earlier cuts.
-		const cuts = [...selectedIndices]
-			.map((idx) => state.words[idx])
-			.filter((w): w is WordWithTimeline => w !== undefined)
-			.sort((a, b) => b.timelineStart - a.timelineStart);
+		// Group consecutive selected indices into contiguous cut ranges so that
+		// inter-word silence within a selection is removed in one shot, leaving
+		// no tiny isolated clips between words.
+		const sortedIdx = [...selectedIndices].sort((a, b) => a - b);
+		const groups: Array<{ lo: number; hi: number }> = [];
+		for (let i = 0; i < sortedIdx.length; ) {
+			const lo = sortedIdx[i]!;
+			let hi = lo;
+			while (
+				i + 1 < sortedIdx.length &&
+				sortedIdx[i + 1] === sortedIdx[i]! + 1
+			) {
+				i++;
+				hi = sortedIdx[i]!;
+			}
+			groups.push({ lo, hi });
+			i++;
+		}
 
+		// Cut right-to-left so earlier ripple shifts don't affect later cut positions.
+		const cuts = groups
+			.map(({ lo, hi }) => ({
+				cutStart: mediaTimeFromSeconds({ seconds: beforeWords[lo]!.timelineStart }),
+				cutEnd: mediaTimeFromSeconds({ seconds: beforeWords[hi]!.timelineEnd }),
+				cutEndSecs: beforeWords[hi]!.timelineEnd,
+			}))
+			.sort((a, b) => b.cutStart - a.cutStart);
+
+		const selectedWordSet = new Set(
+			[...selectedIndices]
+				.map((idx) => beforeWords[idx])
+				.filter((w): w is WordWithTimeline => w !== undefined),
+		);
 		let currentWords = [...beforeWords];
 
 		for (const cut of cuts) {
-			const cutStart = mediaTimeFromSeconds({ seconds: cut.timelineStart });
-			const cutEnd = mediaTimeFromSeconds({ seconds: cut.timelineEnd });
+			applyCutToStateDirectly(cut.cutStart, cut.cutEnd);
 
-			// Apply directly to state (no individual history entries).
-			applyCutToStateDirectly(cutStart, cutEnd);
-
-			const durationSecs = (cutEnd - cutStart) / TICKS_PER_SECOND;
+			const durationSecs = (cut.cutEnd - cut.cutStart) / TICKS_PER_SECOND;
 			currentWords = currentWords
-				.filter((w) => w !== cut)
+				.filter((w) => !selectedWordSet.has(w))
 				.map((w) =>
-					w.timelineStart >= cut.timelineEnd
+					w.timelineStart >= cut.cutEndSecs
 						? {
 								...w,
 								timelineStart: w.timelineStart - durationSecs,
@@ -369,8 +392,34 @@ export function TranscriptView() {
 	const isLoading =
 		state.status === "extracting" || state.status === "transcribing";
 
+	const doneActions =
+		state.status === "done" ? (
+			<div className="flex items-center gap-2">
+				<span className="text-muted-foreground text-xs">
+					{selectedIndices.size > 0
+						? `${selectedIndices.size} word${selectedIndices.size !== 1 ? "s" : ""} selected`
+						: `${state.words.length} words`}
+				</span>
+				{selectedIndices.size > 0 && (
+					<Button size="sm" variant="destructive" onClick={handleDeleteSelected}>
+						Delete
+					</Button>
+				)}
+				<Button
+					size="sm"
+					variant="outline"
+					onClick={() => {
+						dispatch({ type: "reset" });
+						setSelectedIndices(new Set());
+					}}
+				>
+					Re-transcribe
+				</Button>
+			</div>
+		) : null;
+
 	return (
-		<PanelView>
+		<PanelView title="Transcript" actions={doneActions}>
 			<Section>
 				<SectionContent>
 					{state.status !== "done" && (
@@ -398,49 +447,18 @@ export function TranscriptView() {
 					)}
 
 					{state.status === "done" && (
-						<div className="space-y-3">
-							<div className="flex items-center justify-between">
-								<span className="text-muted-foreground text-xs">
-									{selectedIndices.size > 0
-										? `${selectedIndices.size} word${selectedIndices.size !== 1 ? "s" : ""} selected`
-										: `${state.words.length} words`}
-								</span>
-								<div className="flex gap-2">
-									{selectedIndices.size > 0 && (
-										<Button
-											size="sm"
-											variant="destructive"
-											onClick={handleDeleteSelected}
-										>
-											Delete
-										</Button>
-									)}
-									<Button
-										size="sm"
-										variant="outline"
-										onClick={() => {
-											dispatch({ type: "reset" });
-											setSelectedIndices(new Set());
-										}}
-									>
-										Re-transcribe
-									</Button>
-								</div>
-							</div>
-
-							<TranscriptText
-								words={state.words}
-								selectedIndices={selectedIndices}
-								activeWordIndex={activeWordIndex}
-								onSelectionChange={setSelectedIndices}
-								onSeek={(seconds) =>
-									editor.playback.seek({
-										time: mediaTimeFromSeconds({ seconds }),
-									})
-								}
-								onDeleteSelected={handleDeleteSelected}
-							/>
-						</div>
+						<TranscriptText
+							words={state.words}
+							selectedIndices={selectedIndices}
+							activeWordIndex={activeWordIndex}
+							onSelectionChange={setSelectedIndices}
+							onSeek={(seconds) =>
+								editor.playback.seek({
+									time: mediaTimeFromSeconds({ seconds }),
+								})
+							}
+							onDeleteSelected={handleDeleteSelected}
+						/>
 					)}
 				</SectionContent>
 			</Section>
@@ -533,7 +551,7 @@ function TranscriptText({
 			ref={containerRef}
 			tabIndex={0}
 			onKeyDown={handleKeyDown}
-			className="outline-none text-sm leading-7 select-none max-h-[60vh] overflow-y-auto pr-1 focus:ring-1 focus:ring-ring rounded"
+			className="outline-none text-sm leading-7 select-none pr-1 focus:ring-1 focus:ring-ring rounded"
 			style={{ wordBreak: "break-word", cursor: "text" }}
 		>
 			{words.map((word, i) => {

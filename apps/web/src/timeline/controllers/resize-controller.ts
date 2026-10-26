@@ -25,6 +25,7 @@ import {
 } from "@/timeline/snapping";
 import { getElementEdgeSnapPoints } from "@/timeline/element-snap-source";
 import { getPlayheadSnapPoints } from "@/timeline/playhead-snap-source";
+import { getTimelineStartSnapPoints } from "@/timeline/timeline-start-snap-source";
 import { getAnimationKeyframeSnapPointsForTimeline } from "@/timeline/animation-snap-points";
 import {
 	isRetimableElement,
@@ -288,6 +289,7 @@ export class ResizeController {
 			sources: [
 				() => getElementEdgeSnapPoints({ tracks, excludeElementIds }),
 				() => getPlayheadSnapPoints({ playheadTime }),
+				() => getTimelineStartSnapPoints(),
 				() =>
 					getAnimationKeyframeSnapPointsForTimeline({
 						tracks,

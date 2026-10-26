@@ -88,7 +88,7 @@ export function CornerHandle({
 			onPointerUp={onPointerUp}
 		>
 			<div
-				className="rounded-sm bg-white"
+				className="rounded-sm bg-yellow-400"
 				style={{ width: HANDLE_SIZE, height: HANDLE_SIZE }}
 			/>
 		</HandleButton>
@@ -165,7 +165,7 @@ export function EdgeHandle({
 			onPointerUp={onPointerUp}
 		>
 			<div
-				className="rounded-sm bg-white"
+				className="rounded-sm bg-yellow-400"
 				style={{ width, height, transform: `rotate(${rotation}deg)` }}
 			/>
 		</HandleButton>
@@ -246,9 +246,9 @@ export function BoundingBoxOutline({
 				width={Math.max(outlineWidth - 1, 0)}
 				height={Math.max(outlineHeight - 1, 0)}
 				fill="transparent"
-				stroke="white"
+				stroke="#FACC15"
 				strokeDasharray={dashed ? "4 4" : undefined}
-				strokeOpacity={0.75}
+				strokeOpacity={0.9}
 				vectorEffect="non-scaling-stroke"
 				style={{ pointerEvents: onPointerDown ? "all" : "none" }}
 			/>

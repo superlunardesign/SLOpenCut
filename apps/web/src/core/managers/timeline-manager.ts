@@ -68,6 +68,7 @@ export class TimelineManager {
 	private listeners = new Set<() => void>();
 	private previewOverlay = new Map<string, Partial<TimelineElement>>();
 	private previewTracks: SceneTracks | null = null;
+	private previewVersion = 0;
 	public readonly dragSource = new TimelineDragSource();
 
 	constructor(private editor: EditorCore) {}
@@ -224,7 +225,8 @@ export class TimelineManager {
 			return null;
 		}
 
-		return findTrackInSceneTracks({ tracks: activeScene.tracks, trackId });
+		const tracks = this.previewTracks ?? activeScene.tracks;
+		return findTrackInSceneTracks({ tracks, trackId });
 	}
 
 	getElementsWithTracks({
@@ -738,7 +740,12 @@ export class TimelineManager {
 			return;
 		}
 		this.previewTracks = this.applyPreviewOverlay(committedTracks);
+		this.previewVersion += 1;
 		this.notify();
+	}
+
+	getPreviewVersion(): number {
+		return this.previewVersion;
 	}
 
 	commitPreview(): void {
@@ -756,6 +763,7 @@ export class TimelineManager {
 		this.editor.command.push({ command });
 		this.previewOverlay.clear();
 		this.previewTracks = null;
+		this.previewVersion = 0;
 		this.updateTracks(afterTracks);
 	}
 
@@ -763,6 +771,7 @@ export class TimelineManager {
 		if (this.previewOverlay.size === 0) return;
 		this.previewOverlay.clear();
 		this.previewTracks = null;
+		this.previewVersion = 0;
 		this.notify();
 	}
 

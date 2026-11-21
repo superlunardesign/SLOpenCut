@@ -362,23 +362,69 @@ export class ResizeController {
 		});
 
 		// Overflow = how far the drag extends past the neighbor boundary
-		const pushOverflow = subMediaTime({
+		const rawPushOverflow = subMediaTime({
 			a: freeResult.deltaTime,
 			b: result.deltaTime,
 		});
+
+		// For left-side push, cap overflow so pushed elements don't go below t=0.
+		// If a pushed left-neighbor is already at startTime=0 it cannot move
+		// further left; without the cap both the resized clip and the pushed
+		// neighbor end up at t=0 (data overlap) due to the main-track enforce rule.
+		let pushOverflow = rawPushOverflow;
+		let effectiveFreeResult = freeResult;
+		if (session.side === "left" && rawPushOverflow < ZERO_MEDIA_TIME) {
+			const pushTracks = this.config.getSceneTracks();
+			const allPushTracks = [
+				...pushTracks.overlay,
+				pushTracks.main,
+				...pushTracks.audio,
+			];
+			const memberElementIds = new Set(session.members.map((m) => m.elementId));
+			for (const member of session.members) {
+				if (member.leftNeighborBound === null) continue;
+				const track = allPushTracks.find((t) => t.id === member.trackId);
+				if (!track) continue;
+				for (const el of track.elements) {
+					if (memberElementIds.has(el.id)) continue;
+					const elEnd = addMediaTime({ a: el.startTime, b: el.duration });
+					if (elEnd <= member.leftNeighborBound) {
+						// Most negative we can push this element: -el.startTime
+						const minOverflow = -el.startTime as MediaTime;
+						if (pushOverflow < minOverflow) {
+							pushOverflow = minOverflow;
+						}
+					}
+				}
+			}
+			if (pushOverflow !== rawPushOverflow) {
+				// Recompute the member resize with the capped delta so the resized
+				// clip only extends as far as the pushed neighbor can accommodate.
+				const cappedDeltaTime = addMediaTime({
+					a: result.deltaTime,
+					b: pushOverflow,
+				});
+				effectiveFreeResult = computeGroupResize({
+					members: freeMembers,
+					side: session.side,
+					deltaTime: cappedDeltaTime,
+					fps: session.fps,
+				});
+			}
+		}
 
 		const pushUpdates =
 			pushOverflow !== ZERO_MEDIA_TIME
 				? this.buildPushUpdates({ session, pushOverflow })
 				: [];
 
-		// When pushing, apply the unclamped result to the resized clip so it
-		// extends fully, and shift the displaced neighbors.
-		session.result = pushUpdates.length > 0 ? freeResult : result;
+		// When pushing, apply the (possibly capped) unclamped result to the resized
+		// clip so it extends fully, and shift the displaced neighbors.
+		session.result = pushUpdates.length > 0 ? effectiveFreeResult : result;
 		session.pushUpdates = pushUpdates;
 
 		const memberUpdates =
-			pushUpdates.length > 0 ? freeResult.updates : result.updates;
+			pushUpdates.length > 0 ? effectiveFreeResult.updates : result.updates;
 		this.config.previewElements([...memberUpdates, ...pushUpdates]);
 	}
 

@@ -6,6 +6,7 @@ import { useAssetsPanelStore } from "@/components/editor/panels/assets/assets-pa
 import { AudioWaveform, WAVEFORM_GAIN_SAMPLE_COUNT } from "./audio-waveform";
 import { AudioVolumeLine } from "./audio-volume-line";
 import { useElementPreview } from "@/timeline/hooks/use-element-preview";
+import { useClipThumbnail } from "@/timeline/hooks/use-clip-thumbnail";
 import {
 	useKeyframeDrag,
 	type KeyframeDragState,
@@ -1091,9 +1092,18 @@ function TiledMediaContent({
 	const mediaAssets = useEditor((e) => e.media.getAssets());
 
 	const mediaAsset = mediaAssets.find((asset) => asset.id === element.mediaId);
+
+	// For video clips, extract the actual frame at trimStart so each cut clip
+	// shows its own distinct content instead of the same first-frame poster.
+	const clipThumbnail = useClipThumbnail({
+		mediaId: element.type === "video" ? element.mediaId : undefined,
+		file: element.type === "video" ? mediaAsset?.file : undefined,
+		trimStart: element.trimStart,
+	});
+
 	const imageUrl =
 		element.type === "video"
-			? mediaAsset?.thumbnailUrl
+			? (clipThumbnail ?? mediaAsset?.thumbnailUrl)
 			: (mediaAsset?.thumbnailUrl ?? mediaAsset?.url);
 
 	if (!imageUrl) {

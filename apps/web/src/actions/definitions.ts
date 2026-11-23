@@ -185,6 +185,7 @@ const ACTION_DEFAULT_SHORTCUTS = [
 	["split", ["s"]],
 	["split-left", ["q"]],
 	["split-right", ["w"]],
+	["toggle-bookmark", ["f"]],
 	["delete-selected", ["backspace", "delete"]],
 	["copy-selected", ["ctrl+c"]],
 	["paste-copied", ["ctrl+v"]],

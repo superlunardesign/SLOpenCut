@@ -170,15 +170,17 @@ function ToolbarLeftSection() {
 					icon={<span className="text-[10px] font-bold leading-none">1s</span>}
 					tooltip={
 						highlightCursorMode === "1s"
-							? "Exit 1s highlight cutter (click to cancel)"
-							: "1s highlight cutter — hover to preview, click to cut"
+							? "Exit 1s highlight cutter (click to cancel) · Shift+click to split all into 1s clips"
+							: "1s highlight cutter — hover to preview, click to cut · Shift+click to split all into 1s clips"
 					}
 					isActive={highlightCursorMode === "1s"}
 					onClick={({ event }) => {
 						event.stopPropagation();
-						setHighlightCursorMode(
-							highlightCursorMode === "1s" ? null : "1s",
-						);
+						if (event.shiftKey) {
+							invokeAction("split-at-1s");
+						} else {
+							setHighlightCursorMode(highlightCursorMode === "1s" ? null : "1s");
+						}
 					}}
 				/>
 
@@ -186,15 +188,17 @@ function ToolbarLeftSection() {
 					icon={<span className="text-[10px] font-bold leading-none">2s</span>}
 					tooltip={
 						highlightCursorMode === "2s"
-							? "Exit 2s highlight cutter (click to cancel)"
-							: "2s highlight cutter — hover to preview, click to cut"
+							? "Exit 2s highlight cutter (click to cancel) · Shift+click to split all into 2s clips"
+							: "2s highlight cutter — hover to preview, click to cut · Shift+click to split all into 2s clips"
 					}
 					isActive={highlightCursorMode === "2s"}
 					onClick={({ event }) => {
 						event.stopPropagation();
-						setHighlightCursorMode(
-							highlightCursorMode === "2s" ? null : "2s",
-						);
+						if (event.shiftKey) {
+							invokeAction("split-at-2s");
+						} else {
+							setHighlightCursorMode(highlightCursorMode === "2s" ? null : "2s");
+						}
 					}}
 				/>
 

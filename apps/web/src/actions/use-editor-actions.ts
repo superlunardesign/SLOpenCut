@@ -66,6 +66,49 @@ export function useEditorActions() {
 		return activateScope({ entry: timelineScope });
 	}, [hasTimelineSelection, timelineScope]);
 
+	const splitAtInterval = ({ intervalSeconds }: { intervalSeconds: number }) => {
+		const scene = editor.scenes.getActiveScene();
+		const intervalTicks = mediaTimeFromSeconds({ seconds: intervalSeconds });
+		const allTracks = [...scene.tracks.overlay, scene.tracks.main, ...scene.tracks.audio];
+
+		// Use selected clips, or fall back to all main track clips
+		const targetElements =
+			selectedElements.length > 0
+				? selectedElements.flatMap(({ trackId, elementId }) => {
+						const track = allTracks.find((t) => t.id === trackId);
+						const element = track?.elements.find((e) => e.id === elementId);
+						if (!track || !element) return [];
+						return [{ trackId, elementId, startTime: element.startTime, duration: element.duration }];
+					})
+				: scene.tracks.main.elements.map((el) => ({
+						trackId: scene.tracks.main.id,
+						elementId: el.id,
+						startTime: el.startTime,
+						duration: el.duration,
+					}));
+
+		if (targetElements.length === 0) return;
+
+		// For each clip, collect split points inside it, then apply right-to-left
+		// so the original elementId stays valid as the left portion after each split.
+		for (const { trackId, elementId, startTime, duration } of [...targetElements].reverse()) {
+			const clipEnd = addMediaTime({ a: startTime, b: duration });
+			const splitTimes: number[] = [];
+
+			const firstBoundary = Math.ceil(startTime / intervalTicks) * intervalTicks;
+			for (let t = firstBoundary; t < clipEnd; t += intervalTicks) {
+				if (t > startTime) splitTimes.push(t);
+			}
+
+			for (const splitTick of splitTimes.reverse()) {
+				editor.timeline.splitElements({
+					elements: [{ trackId, elementId }],
+					splitTime: mediaTime({ ticks: splitTick }),
+				});
+			}
+		}
+	};
+
 	useActionHandler(
 		"toggle-play",
 		() => {
@@ -293,6 +336,22 @@ export function useEditorActions() {
 				splitTime: currentTime,
 				retainSide: "left",
 			});
+		},
+		undefined,
+	);
+
+	useActionHandler(
+		"split-at-1s",
+		() => {
+			splitAtInterval({ intervalSeconds: 1 });
+		},
+		undefined,
+	);
+
+	useActionHandler(
+		"split-at-2s",
+		() => {
+			splitAtInterval({ intervalSeconds: 2 });
 		},
 		undefined,
 	);

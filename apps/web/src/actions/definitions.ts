@@ -78,6 +78,14 @@ export const ACTIONS = {
 		description: "Split and remove right",
 		category: "editing",
 	},
+	"split-at-1s": {
+		description: "Split selected clips into 1-second segments",
+		category: "editing",
+	},
+	"split-at-2s": {
+		description: "Split selected clips into 2-second segments",
+		category: "editing",
+	},
 	"delete-selected": {
 		description: "Delete current selection",
 		category: "editing",

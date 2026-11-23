@@ -163,6 +163,22 @@ function ToolbarLeftSection() {
 				/>
 
 				<ToolbarButton
+					icon={<span className="text-[10px] font-bold leading-none">1s</span>}
+					tooltip="Split into 1-second clips (select clips first, or applies to whole track)"
+					onClick={({ event }) =>
+						handleAction({ action: "split-at-1s", event })
+					}
+				/>
+
+				<ToolbarButton
+					icon={<span className="text-[10px] font-bold leading-none">2s</span>}
+					tooltip="Split into 2-second clips (select clips first, or applies to whole track)"
+					onClick={({ event }) =>
+						handleAction({ action: "split-at-2s", event })
+					}
+				/>
+
+				<ToolbarButton
 					icon={
 						<HugeiconsIcon
 							icon={isSelectedSourceAudioSeparated ? Unlink02Icon : Link02Icon}

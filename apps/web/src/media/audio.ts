@@ -148,6 +148,21 @@ export async function collectAudioElements({
 	);
 	const pendingElements: Array<Promise<CollectedAudioElement | null>> = [];
 
+	// Deduplicate asset decoding: many clips may share the same source file
+	// (e.g. after transcript cuts or split-at-interval). Decode each asset
+	// only once and share the resulting buffer across all clips that use it.
+	const assetBufferCache = new Map<string, Promise<AudioBuffer | null>>();
+
+	const getAssetBuffer = (asset: MediaAsset): Promise<AudioBuffer | null> => {
+		if (!assetBufferCache.has(asset.id)) {
+			assetBufferCache.set(
+				asset.id,
+				resolveAudioBufferForAsset({ asset, audioContext }),
+			);
+		}
+		return assetBufferCache.get(asset.id)!;
+	};
+
 	for (const { element, mediaAsset } of candidates) {
 		if (element.type === "audio") {
 			pendingElements.push(
@@ -181,10 +196,7 @@ export async function collectAudioElements({
 			if (!mediaAsset || !mediaSupportsAudio({ media: mediaAsset })) continue;
 
 			pendingElements.push(
-				resolveAudioBufferForAsset({
-					asset: mediaAsset,
-					audioContext,
-				}).then((audioBuffer) => {
+				getAssetBuffer(mediaAsset).then((audioBuffer) => {
 					if (!audioBuffer) return null;
 					return {
 						timelineElement: element,

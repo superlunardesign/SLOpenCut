@@ -53,7 +53,10 @@ import {
 	getTimelineZoomMin,
 	getTimelinePaddingPx,
 } from "@/timeline";
-import { timelineTimeToPixels } from "@/timeline/pixel-utils";
+import {
+	timelineTimeToPixels,
+	getTimelinePixelsPerSecond,
+} from "@/timeline/pixel-utils";
 import {
 	getTrackHeight,
 	getCumulativeHeightBefore,
@@ -85,6 +88,11 @@ import { useScrollPosition } from "@/timeline/hooks/use-scroll-position";
 import { useTimelinePlayhead } from "@/timeline/hooks/use-timeline-playhead";
 import { DragLine } from "./drag-line";
 import { invokeAction } from "@/actions";
+import {
+	TICKS_PER_SECOND,
+	addMediaTime,
+	mediaTime,
+} from "@/wasm";
 import { resolveTimelineElementIntersections } from "./selection-hit-testing";
 import { cn } from "@/utils/ui";
 
@@ -116,6 +124,10 @@ const TRACK_ICONS: Record<TimelineTrack["type"], ReactNode> = {
 
 export function Timeline() {
 	const snappingEnabled = useTimelineStore((s) => s.snappingEnabled);
+	const highlightCursorMode = useTimelineStore((s) => s.highlightCursorMode);
+	const setHighlightCursorMode = useTimelineStore(
+		(s) => s.setHighlightCursorMode,
+	);
 	const {
 		selectedElements,
 		clearElementSelection,
@@ -428,6 +440,78 @@ export function Timeline() {
 	const timelineHeaderHeight =
 		timelineHeaderHeightValue + TIMELINE_CONTENT_TOP_PADDING_PX;
 
+	// Highlight cursor: tracks mouse position and shows a 1s/2s blue block overlay.
+	const [highlightMouseX, setHighlightMouseX] = useState<number | null>(null);
+
+	useEffect(() => {
+		if (!highlightCursorMode) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape") setHighlightCursorMode(null);
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [highlightCursorMode, setHighlightCursorMode]);
+
+	const highlightBlockPx = (() => {
+		if (!highlightCursorMode || highlightMouseX === null) return null;
+		const intervalSeconds = highlightCursorMode === "1s" ? 1 : 2;
+		const pixelsPerSecond = getTimelinePixelsPerSecond({ zoomLevel });
+		const scrollLeft = tracksScrollRef.current?.scrollLeft ?? 0;
+		const timeSeconds = (highlightMouseX + scrollLeft) / pixelsPerSecond;
+		const blockStartSeconds =
+			Math.floor(timeSeconds / intervalSeconds) * intervalSeconds;
+		const leftPx = blockStartSeconds * pixelsPerSecond - scrollLeft;
+		const widthPx = intervalSeconds * pixelsPerSecond;
+		return { leftPx, widthPx };
+	})();
+
+	const handleHighlightClick = useCallback(
+		(event: React.MouseEvent) => {
+			if (!highlightCursorMode || !scene) return;
+			event.stopPropagation();
+
+			const intervalSeconds = highlightCursorMode === "1s" ? 1 : 2;
+			const intervalTicks = Math.round(intervalSeconds * TICKS_PER_SECOND);
+			const container = tracksContainerRef.current;
+			if (!container) return;
+
+			const rect = container.getBoundingClientRect();
+			const mouseX = event.clientX - rect.left;
+			const scrollLeft = tracksScrollRef.current?.scrollLeft ?? 0;
+			const pixelsPerSecond = getTimelinePixelsPerSecond({ zoomLevel });
+			const timeSeconds = (mouseX + scrollLeft) / pixelsPerSecond;
+			const blockStartTicks = Math.floor(timeSeconds / intervalSeconds) * intervalTicks;
+			const blockEndTicks = blockStartTicks + intervalTicks;
+
+			const blockStart = mediaTime({ ticks: blockStartTicks });
+			const blockEnd = mediaTime({ ticks: blockEndTicks });
+
+			// Split at blockEnd first, then blockStart.
+			// This keeps original element IDs valid for the second pass
+			// (the left portion always retains its original ID after a split).
+			for (const boundary of [blockEnd, blockStart]) {
+				const currentScene = editor.scenes.getActiveScene();
+				const allCurrentTracks = [
+					...currentScene.tracks.overlay,
+					currentScene.tracks.main,
+					...currentScene.tracks.audio,
+				];
+				for (const track of allCurrentTracks) {
+					for (const el of track.elements) {
+						const elEnd = addMediaTime({ a: el.startTime, b: el.duration });
+						if (el.startTime < boundary && elEnd > boundary) {
+							editor.timeline.splitElements({
+								elements: [{ trackId: track.id, elementId: el.id }],
+								splitTime: boundary,
+							});
+						}
+					}
+				}
+			}
+		},
+		[highlightCursorMode, scene, editor, zoomLevel],
+	);
+
 	return (
 		<section
 			className={
@@ -458,6 +542,35 @@ export function Timeline() {
 					<SelectionBox
 						bounds={selectionBox?.bounds ?? null}
 					/>
+
+					{/* Highlight cutter: full-coverage interactive overlay + blue block preview */}
+					{/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
+					{highlightCursorMode && (
+						<div
+							className="absolute inset-0 z-20 cursor-crosshair"
+							onMouseMove={(e) => {
+								const rect = tracksContainerRef.current?.getBoundingClientRect();
+								if (!rect) return;
+								setHighlightMouseX(e.clientX - rect.left);
+							}}
+							onMouseLeave={() => setHighlightMouseX(null)}
+							onClick={handleHighlightClick}
+						>
+							{highlightBlockPx && (
+								<div
+									className="pointer-events-none absolute inset-y-0"
+									style={{
+										left: `${Math.max(0, highlightBlockPx.leftPx)}px`,
+										width: `${highlightBlockPx.widthPx}px`,
+										background: "rgba(59,130,246,0.25)",
+										borderLeft: "2px solid rgba(59,130,246,0.8)",
+										borderRight: "2px solid rgba(59,130,246,0.8)",
+									}}
+								/>
+							)}
+						</div>
+					)}
+
 					<DragLine
 						dropTarget={dropTarget}
 						tracks={tracks}

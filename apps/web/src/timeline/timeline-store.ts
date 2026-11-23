@@ -6,6 +6,8 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+export type HighlightCursorMode = "1s" | "2s" | null;
+
 interface TimelineStore {
 	snappingEnabled: boolean;
 	toggleSnapping: () => void;
@@ -13,6 +15,8 @@ interface TimelineStore {
 	toggleRippleEditing: () => void;
 	expandedElementIds: Set<string>;
 	toggleElementExpanded: (elementId: string) => void;
+	highlightCursorMode: HighlightCursorMode;
+	setHighlightCursorMode: (mode: HighlightCursorMode) => void;
 }
 
 export const useTimelineStore = create<TimelineStore>()(
@@ -44,6 +48,12 @@ export const useTimelineStore = create<TimelineStore>()(
 					}
 					return { expandedElementIds: next };
 				});
+			},
+
+			highlightCursorMode: null,
+
+			setHighlightCursorMode: (mode) => {
+				set({ highlightCursorMode: mode });
 			},
 		}),
 		{

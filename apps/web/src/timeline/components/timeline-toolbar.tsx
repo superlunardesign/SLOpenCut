@@ -95,6 +95,10 @@ function ToolbarLeftSection() {
 	const isCurrentlyBookmarked = useEditor((e) =>
 		e.scenes.isBookmarked({ time: e.playback.getCurrentTime() }),
 	);
+	const highlightCursorMode = useTimelineStore((s) => s.highlightCursorMode);
+	const setHighlightCursorMode = useTimelineStore(
+		(s) => s.setHighlightCursorMode,
+	);
 	const selectedElement =
 		selectedElements.length === 1
 			? (editor.timeline.getElementsWithTracks({
@@ -164,18 +168,34 @@ function ToolbarLeftSection() {
 
 				<ToolbarButton
 					icon={<span className="text-[10px] font-bold leading-none">1s</span>}
-					tooltip="Split into 1-second clips (select clips first, or applies to whole track)"
-					onClick={({ event }) =>
-						handleAction({ action: "split-at-1s", event })
+					tooltip={
+						highlightCursorMode === "1s"
+							? "Exit 1s highlight cutter (click to cancel)"
+							: "1s highlight cutter — hover to preview, click to cut"
 					}
+					isActive={highlightCursorMode === "1s"}
+					onClick={({ event }) => {
+						event.stopPropagation();
+						setHighlightCursorMode(
+							highlightCursorMode === "1s" ? null : "1s",
+						);
+					}}
 				/>
 
 				<ToolbarButton
 					icon={<span className="text-[10px] font-bold leading-none">2s</span>}
-					tooltip="Split into 2-second clips (select clips first, or applies to whole track)"
-					onClick={({ event }) =>
-						handleAction({ action: "split-at-2s", event })
+					tooltip={
+						highlightCursorMode === "2s"
+							? "Exit 2s highlight cutter (click to cancel)"
+							: "2s highlight cutter — hover to preview, click to cut"
 					}
+					isActive={highlightCursorMode === "2s"}
+					onClick={({ event }) => {
+						event.stopPropagation();
+						setHighlightCursorMode(
+							highlightCursorMode === "2s" ? null : "2s",
+						);
+					}}
 				/>
 
 				<ToolbarButton

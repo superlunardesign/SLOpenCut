@@ -458,8 +458,7 @@ export function Timeline() {
 		const pixelsPerSecond = getTimelinePixelsPerSecond({ zoomLevel });
 		const scrollLeft = tracksScrollRef.current?.scrollLeft ?? 0;
 		const timeSeconds = (highlightMouseX + scrollLeft) / pixelsPerSecond;
-		const blockStartSeconds =
-			Math.floor(timeSeconds / intervalSeconds) * intervalSeconds;
+		const blockStartSeconds = timeSeconds;
 		const leftPx = blockStartSeconds * pixelsPerSecond - scrollLeft;
 		const widthPx = intervalSeconds * pixelsPerSecond;
 		return { leftPx, widthPx };
@@ -480,7 +479,7 @@ export function Timeline() {
 			const scrollLeft = tracksScrollRef.current?.scrollLeft ?? 0;
 			const pixelsPerSecond = getTimelinePixelsPerSecond({ zoomLevel });
 			const timeSeconds = (mouseX + scrollLeft) / pixelsPerSecond;
-			const blockStartTicks = Math.floor(timeSeconds / intervalSeconds) * intervalTicks;
+			const blockStartTicks = Math.round(timeSeconds * TICKS_PER_SECOND);
 			const blockEndTicks = blockStartTicks + intervalTicks;
 
 			const blockStart = mediaTime({ ticks: blockStartTicks });

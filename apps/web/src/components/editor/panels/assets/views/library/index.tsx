@@ -49,9 +49,14 @@ export function LibraryView() {
 	const fetchAssets = useCallback(async () => {
 		try {
 			const res = await fetch("/api/library/assets");
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({})) as { error?: string };
+				throw new Error(err.error ?? `HTTP ${res.status}`);
+			}
 			const data = (await res.json()) as { assets: LibraryAsset[] };
 			setAssets(data.assets ?? []);
-		} catch {
+		} catch (err) {
+			console.error("[Library] fetchAssets:", err);
 			toast.error("Failed to load library");
 		} finally {
 			setLoading(false);
@@ -80,17 +85,22 @@ export function LibraryView() {
 					publicUrl: string;
 				};
 
+				if (!presignRes.ok) {
+					const e = await presignRes.json().catch(() => ({})) as { error?: string };
+					throw new Error(`Presign failed: ${e.error ?? presignRes.status}`);
+				}
+
 				// 2. Upload directly to R2
 				const uploadRes = await fetch(uploadUrl, {
 					method: "PUT",
 					headers: { "Content-Type": file.type },
 					body: file,
 				});
-				if (!uploadRes.ok) throw new Error("R2 upload failed");
+				if (!uploadRes.ok) throw new Error(`R2 upload failed (${uploadRes.status})`);
 
 				// 3. Save metadata to D1
 				const type = getAssetType(file.type);
-				await fetch("/api/library/assets", {
+				const metaRes = await fetch("/api/library/assets", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
@@ -103,6 +113,10 @@ export function LibraryView() {
 						url: publicUrl,
 					}),
 				});
+				if (!metaRes.ok) {
+					const e = await metaRes.json().catch(() => ({})) as { error?: string };
+					throw new Error(`Metadata save failed: ${e.error ?? metaRes.status}`);
+				}
 			}
 			toast.success(
 				files.length === 1

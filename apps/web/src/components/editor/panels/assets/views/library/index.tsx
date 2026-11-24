@@ -15,6 +15,7 @@ import { processMediaAssets } from "@/media/processing";
 import { buildElementFromMedia } from "@/timeline/element-utils";
 import { DEFAULT_NEW_ELEMENT_DURATION } from "@/timeline/creation";
 import { mediaTimeFromSeconds } from "@/wasm";
+import type { MediaAsset } from "@/media/types";
 import {
 	CloudUploadIcon,
 	Delete02Icon,
@@ -128,7 +129,10 @@ export function LibraryView() {
 	const handleAddToTimeline = async (asset: LibraryAsset) => {
 		setAddingId(asset.id);
 		try {
-			// Fetch the file from R2 and import into project media
+			const activeProject = editor.project.getActive();
+			if (!activeProject) throw new Error("No active project");
+
+			// Fetch from R2, create a File, and import into project media
 			const res = await fetch(asset.url);
 			if (!res.ok) throw new Error("Failed to fetch asset");
 			const blob = await res.blob();
@@ -137,25 +141,28 @@ export function LibraryView() {
 			const processed = await processMediaAssets({ files: [file] });
 			if (!processed.length) throw new Error("Processing failed");
 
-			const mediaAsset = processed[0];
-			editor.media.addAssets({ assets: processed });
-
-			const currentTime = editor.playback.getCurrentTime();
-			const scene = editor.scenes.getActiveScene();
-			const element = buildElementFromMedia({
-				media: mediaAsset,
-				startTime: currentTime,
-				duration:
-					mediaAsset.type === "video" || mediaAsset.type === "audio"
-						? mediaTimeFromSeconds({
-								seconds: mediaAsset.duration ?? DEFAULT_NEW_ELEMENT_DURATION,
-							})
-						: DEFAULT_NEW_ELEMENT_DURATION,
+			const mediaAsset = processed[0] as MediaAsset;
+			await editor.media.addMediaAsset({
+				projectId: activeProject.metadata.id,
+				asset: mediaAsset,
 			});
 
-			editor.timeline.addElement({
-				trackId: scene.tracks.main.id,
+			const duration =
+				mediaAsset.duration != null
+					? mediaTimeFromSeconds({ seconds: mediaAsset.duration })
+					: DEFAULT_NEW_ELEMENT_DURATION;
+
+			const element = buildElementFromMedia({
+				mediaId: mediaAsset.id,
+				mediaType: mediaAsset.type,
+				name: mediaAsset.name,
+				duration,
+				startTime: editor.playback.getCurrentTime(),
+			});
+
+			editor.timeline.insertElement({
 				element,
+				placement: { mode: "auto" },
 			});
 		} catch (err) {
 			console.error(err);

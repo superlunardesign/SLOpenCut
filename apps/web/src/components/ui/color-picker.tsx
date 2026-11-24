@@ -27,6 +27,7 @@ import {
 	parseColorInput,
 	parseHexAlpha,
 } from "@/utils/color";
+import { useColorLibrary } from "@/text/use-color-library";
 
 const CHECKERBOARD_STYLE = {
 	backgroundImage: `
@@ -55,6 +56,7 @@ function ColorPickerContent({
 	side = "left",
 	align = "center",
 }: ColorPickerContentProps) {
+	const { colors: libraryColors, addColor, removeColor } = useColorLibrary();
 	const [isDragging, setIsDragging] = useState<
 		"saturation" | "hue" | "opacity" | null
 	>(null);
@@ -399,6 +401,41 @@ function ColorPickerContent({
 						onKeyDown={handleInputKeyDown}
 						onPaste={handlePaste}
 					/>
+				</div>
+
+				{/* Color library swatches */}
+				<div className="border-t pt-2">
+					<div className="mb-1.5 flex items-center justify-between">
+						<span className="text-muted-foreground text-xs">Color library</span>
+						<button
+							type="button"
+							title="Add current color to library"
+							className="text-muted-foreground hover:text-foreground text-xs transition-colors"
+							onClick={() => addColor(value)}
+						>
+							+ Add
+						</button>
+					</div>
+					<div className="flex flex-wrap gap-1">
+						{libraryColors.map((hex) => (
+							<button
+								key={hex}
+								type="button"
+								title={`#${hex} — right-click to remove`}
+								className="size-5 rounded-sm border border-black/20 transition-transform hover:scale-110"
+								style={{ backgroundColor: `#${hex}` }}
+								onClick={() => {
+									const full = appendAlpha({ rgbHex: hex, alpha });
+									onChange?.(full);
+									onChangeEnd?.(full);
+								}}
+								onContextMenu={(e) => {
+									e.preventDefault();
+									removeColor(hex);
+								}}
+							/>
+						))}
+					</div>
 				</div>
 			</div>
 		</PopoverContent>

@@ -14,10 +14,14 @@ function getD1Config() {
 	return { accountId, apiToken, databaseId };
 }
 
-interface D1Result<T> {
-	results: T[];
+interface D1ApiResponse<T> {
+	result: Array<{
+		results: T[];
+		success: boolean;
+	}>;
 	success: boolean;
-	errors: { message: string }[];
+	errors: Array<{ code: number; message: string }>;
+	messages: string[];
 }
 
 export async function d1Query<T>(
@@ -38,27 +42,18 @@ export async function d1Query<T>(
 		},
 	);
 
-	if (!res.ok) {
-		const text = await res.text();
-		throw new Error(`D1 query failed: ${res.status} ${text}`);
-	}
-
 	const rawText = await res.text();
-	let json: unknown;
-	try {
-		json = JSON.parse(rawText);
-	} catch {
-		throw new Error(`D1 response not JSON: ${rawText.slice(0, 500)}`);
+
+	if (!res.ok) {
+		throw new Error(`D1 query failed: ${res.status} ${rawText}`);
 	}
 
-	// D1 REST API returns an array for the /query endpoint
-	const asArray = Array.isArray(json) ? json as D1Result<T>[] : [json as D1Result<T>];
-	const first = asArray[0];
+	const wrapper = JSON.parse(rawText) as D1ApiResponse<T>;
 
-	if (!first?.success) {
-		// Return the full raw response so it's visible in the browser
-		throw new Error(`D1 error: ${rawText}`);
+	if (!wrapper.success) {
+		const msg = wrapper.errors?.[0]?.message ?? rawText;
+		throw new Error(`D1 error: ${msg}`);
 	}
 
-	return first.results;
+	return wrapper.result?.[0]?.results ?? [];
 }

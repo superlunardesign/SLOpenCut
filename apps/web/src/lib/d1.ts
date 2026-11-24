@@ -43,19 +43,21 @@ export async function d1Query<T>(
 		throw new Error(`D1 query failed: ${res.status} ${text}`);
 	}
 
-	const json = await res.json() as unknown;
-	console.log("[D1] raw response:", JSON.stringify(json));
+	const rawText = await res.text();
+	let json: unknown;
+	try {
+		json = JSON.parse(rawText);
+	} catch {
+		throw new Error(`D1 response not JSON: ${rawText.slice(0, 500)}`);
+	}
 
-	// D1 REST API returns an array of result objects
-	const results = Array.isArray(json) ? json as D1Result<T>[] : null;
-	const first = results?.[0];
+	// D1 REST API returns an array for the /query endpoint
+	const asArray = Array.isArray(json) ? json as D1Result<T>[] : [json as D1Result<T>];
+	const first = asArray[0];
 
 	if (!first?.success) {
-		const errors = first?.errors ?? (json as { errors?: { message: string }[] })?.errors;
-		const msg = errors?.[0]?.message
-			?? (json as { error?: string })?.error
-			?? JSON.stringify(json);
-		throw new Error(`D1 error: ${msg}`);
+		// Return the full raw response so it's visible in the browser
+		throw new Error(`D1 error: ${rawText}`);
 	}
 
 	return first.results;

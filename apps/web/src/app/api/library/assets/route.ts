@@ -40,8 +40,9 @@ export async function GET(req: Request) {
 		const assets = await d1Query<LibraryAsset>(sql, params);
 		return NextResponse.json({ assets });
 	} catch (err) {
-		console.error("[library/assets GET]", err);
-		return NextResponse.json({ error: "Failed to list assets" }, { status: 500 });
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error("[library/assets GET]", msg);
+		return NextResponse.json({ error: msg }, { status: 500 });
 	}
 }
 
@@ -71,7 +72,8 @@ export async function POST(req: Request) {
 
 		return NextResponse.json({ id });
 	} catch (err) {
-		console.error("[library/assets POST]", err);
-		return NextResponse.json({ error: "Failed to save asset" }, { status: 500 });
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error("[library/assets POST]", msg);
+		return NextResponse.json({ error: msg }, { status: 500 });
 	}
 }

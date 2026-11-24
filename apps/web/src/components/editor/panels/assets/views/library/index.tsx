@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PanelView } from "@/components/editor/panels/assets/views/base-panel";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import {
 	ContextMenu,
@@ -41,6 +42,7 @@ export function LibraryView() {
 	const [loading, setLoading] = useState(true);
 	const [uploading, setUploading] = useState(false);
 	const [filter, setFilter] = useState<AssetTypeFilter>("all");
+	const [search, setSearch] = useState("");
 	const [addingId, setAddingId] = useState<string | null>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -172,8 +174,13 @@ export function LibraryView() {
 		}
 	};
 
-	const filtered =
-		filter === "all" ? assets : assets.filter((a) => a.type === filter);
+	const filtered = assets
+		.filter((a) => filter === "all" || a.type === filter)
+		.filter(
+			(a) =>
+				!search.trim() ||
+				a.name.toLowerCase().includes(search.toLowerCase()),
+		);
 
 	const filterButtons: { key: AssetTypeFilter; label: string }[] = [
 		{ key: "all", label: "All" },
@@ -215,6 +222,19 @@ export function LibraryView() {
 				</div>
 			}
 		>
+			{/* Search */}
+			<div className="mb-3">
+				<Input
+					placeholder="Search library"
+					className="w-full"
+					containerClassName="w-full"
+					value={search}
+					onChange={(e) => setSearch(e.currentTarget.value)}
+					showClearIcon
+					onClear={() => setSearch("")}
+				/>
+			</div>
+
 			{/* Type filter pills */}
 			<div className="mb-3 flex gap-1">
 				{filterButtons.map(({ key, label }) => (

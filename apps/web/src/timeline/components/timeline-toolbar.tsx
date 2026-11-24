@@ -49,6 +49,7 @@ import { OcRippleIcon } from "@/components/icons";
 import { GraphEditorPopover } from "./graph-editor/popover";
 import { PopoverTrigger } from "@/components/ui/popover";
 import { useGraphEditorController } from "./graph-editor/use-controller";
+import { VoiceoverButton } from "@/components/editor/voiceover";
 
 export function TimelineToolbar({
 	zoomLevel,
@@ -336,6 +337,8 @@ function ToolbarRightSection({
 					tooltip="Ripple editing"
 					onClick={() => toggleRippleEditing()}
 				/>
+
+				<VoiceoverButton />
 			</TooltipProvider>
 
 			<div className="bg-border mx-1 h-6 w-px" />

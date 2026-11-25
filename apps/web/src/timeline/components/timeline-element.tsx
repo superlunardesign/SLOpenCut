@@ -6,7 +6,7 @@ import { useAssetsPanelStore } from "@/components/editor/panels/assets/assets-pa
 import { AudioWaveform, WAVEFORM_GAIN_SAMPLE_COUNT } from "./audio-waveform";
 import { AudioVolumeLine } from "./audio-volume-line";
 import { useElementPreview } from "@/timeline/hooks/use-element-preview";
-import { useClipThumbnail } from "@/timeline/hooks/use-clip-thumbnail";
+import { useFilmstripThumbnails } from "@/timeline/hooks/use-filmstrip-thumbnails";
 import {
 	useKeyframeDrag,
 	type KeyframeDragState,
@@ -51,7 +51,7 @@ import {
 import { buildWaveformGainSamples, isElementMuted } from "@/timeline/audio-state";
 import { getTimelinePixelsPerSecond } from "@/timeline";
 import { buildWaveformSourceKey } from "@/media/waveform-summary";
-import { addMediaTime, type MediaTime, TICKS_PER_SECOND } from "@/wasm";
+import { addMediaTime, type MediaTime, TICKS_PER_SECOND, mediaTimeToSeconds } from "@/wasm";
 import {
 	getActionDefinition,
 	type TAction,
@@ -1090,22 +1090,75 @@ function TiledMediaContent({
 	track: TimelineTrack;
 }) {
 	const mediaAssets = useEditor((e) => e.media.getAssets());
-
 	const mediaAsset = mediaAssets.find((asset) => asset.id === element.mediaId);
+	const pixelsPerSecond = useContext(PixelsPerSecondContext) ?? 0;
 
-	// For video clips, extract the actual frame at trimStart so each cut clip
-	// shows its own distinct content instead of the same first-frame poster.
-	const clipThumbnail = useClipThumbnail({
+	const trackHeight = getTrackHeight({ type: track.type });
+	const tileWidth = trackHeight * THUMBNAIL_ASPECT_RATIO;
+
+	const trimStartSeconds = mediaTimeToSeconds({ time: element.trimStart });
+	const durationSeconds = mediaTimeToSeconds({ time: element.duration });
+
+	// Filmstrip: different frames at each tile position for video clips
+	const filmstrip = useFilmstripThumbnails({
 		mediaId: element.type === "video" ? element.mediaId : undefined,
 		file: element.type === "video" ? mediaAsset?.file : undefined,
-		trimStart: element.trimStart,
+		trimStartSeconds,
+		durationSeconds,
+		tileWidth,
+		pixelsPerSecond,
 	});
 
-	const imageUrl =
-		element.type === "video"
-			? (clipThumbnail ?? mediaAsset?.thumbnailUrl)
-			: (mediaAsset?.thumbnailUrl ?? mediaAsset?.url);
+	const header = (
+		<MediaElementHeader
+			name={mediaAsset?.name}
+			leading={
+				hasElementEffects({ element }) ? (
+					<EffectsButton element={element} track={track} />
+				) : null
+			}
+			hasFade={true}
+		/>
+	);
 
+	if (element.type === "video") {
+		const hasAnyFrame = filmstrip.some(Boolean);
+		if (!hasAnyFrame) {
+			return (
+				<span className="text-foreground/80 truncate text-xs">
+					{element.name}
+				</span>
+			);
+		}
+		return (
+			<>
+				<div
+					className="absolute inset-0 overflow-hidden"
+					style={{ pointerEvents: "none" }}
+				>
+					{filmstrip.map((url, i) =>
+						url ? (
+							<div
+								key={i}
+								className="absolute top-0 bottom-0"
+								style={{
+									left: i * tileWidth,
+									width: tileWidth,
+									backgroundImage: `url(${url})`,
+									backgroundSize: "cover",
+									backgroundPosition: "center",
+								}}
+							/>
+						) : null,
+					)}
+				</div>
+				{header}
+			</>
+		);
+	}
+
+	// Image element: single tile repeated
+	const imageUrl = mediaAsset?.thumbnailUrl ?? mediaAsset?.url;
 	if (!imageUrl) {
 		return (
 			<span className="text-foreground/80 truncate text-xs">
@@ -1113,10 +1166,6 @@ function TiledMediaContent({
 			</span>
 		);
 	}
-
-	const trackHeight = getTrackHeight({ type: track.type });
-	const tileWidth = trackHeight * THUMBNAIL_ASPECT_RATIO;
-
 	return (
 		<>
 			<div
@@ -1130,15 +1179,7 @@ function TiledMediaContent({
 					pointerEvents: "none",
 				}}
 			/>
-			<MediaElementHeader
-				name={mediaAsset?.name}
-				leading={
-					hasElementEffects({ element }) ? (
-						<EffectsButton element={element} track={track} />
-					) : null
-				}
-				hasFade={true}
-			/>
+			{header}
 		</>
 	);
 }
